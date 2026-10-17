@@ -1,11 +1,13 @@
 import type {
-  AppState, DateISO, Exercise, MobilityZone, MuscleGroup, Pillar, PillarProgress, PillarUnit, Session,
+  AppState, DateISO, ExerciseLibrary, GoalsSource, MobilityZone, MuscleGroup, Pillar, PillarProgress, PillarUnit, Session,
   SessionItem, Settings, StrengthSet, WeekSummary, WeeklyGoals,
 } from './types'
 import { PILLARS } from './types'
 import { PILLAR_UNIT } from './pillars'
 import { addDays, isDateISO, weekStartOf } from './dates'
-import { sessionsWord } from './plural'
+import { minutesWord, sessionsWord } from './plural'
+import { checkZone2, maxHrFromSettings, zoneBounds } from './hr'
+import type { ZoneBounds } from './hr'
 
 /* Подсчёт недели по пяти столпам, разделы 4.1-4.5 плана. Все функции чистые:
    часы и хранилище не читаются, неделя задаётся датой понедельника (любая дата
@@ -42,17 +44,27 @@ export const STRENGTH_DAY_MIN_SETS = 6        // силовой день: от �
 export const MAX_WORKING_RIR = 3              // запас больше трёх повторов в зачёт не идёт
 export const DAY_MIN_MINUTES = 5              // день мобильности или баланса: от пяти минут
 export const EXTERNAL_INTERVAL_MIN_MINUTES = 10  // внешнее занятие с интервалами считается сессией
+/* Оценка длительности одного повтора упражнения мобильности или баланса, которое
+   вводится повторами (большая растяжка, гусеница, bird dog): секунд в подходе нет,
+   без оценки такая работа не дала бы столпу ни минуты. */
+export const SECONDS_PER_REP = 4
 
-export type ExerciseLibrary = Readonly<Record<string, Exercise>>
-export type GoalsSource = Pick<Settings, 'goals'>
 
 const MUSCLE_GROUPS: readonly MuscleGroup[] = ['legs', 'back', 'chest-shoulders', 'arms', 'core']
 const MOBILITY_ZONES: readonly MobilityZone[] = ['hips', 'spine', 'ankles', 'hamstrings', 'shoulders']
 
-/* Столпы, у которых второй показатель (дни) входит в условие «выполнен».
-   У интервалов тяжёлые минуты только справочные: шкала на них не завязана. */
+/* Столпы, у которых второй показатель входит в условие «выполнен». По плану
+   (решение 0.6 и раздел 4.1) это только сила: три силовых дня обязательны.
+   Дни мобильности и баланса (4.4, 4.5) и тяжёлые минуты интервалов (4.3) -
+   справочные строки, шкала и выполнение на них не завязаны. */
 const SECONDARY_GATES: Record<Pillar, boolean> = {
-  strength: true, zone2: false, intervals: false, mobility: true, balance: true,
+  strength: true, zone2: false, intervals: false, mobility: false, balance: false,
+}
+
+/* Входит ли второй показатель столпа в условие выполнения: подписи «осталось»
+   называют только то, без чего столп не закрыть. */
+export function isSecondaryRequired(pillar: Pillar): boolean {
+  return SECONDARY_GATES[pillar]
 }
 
 /* ---- разбор входа ---- */
@@ -85,6 +97,22 @@ export function normalizeGoals(source?: Partial<WeeklyGoals> | null): WeeklyGoal
   }
 }
 
+/* Что нужно неделе от настроек: цели и, по желанию, данные для зон пульса.
+   Settings из состояния подходит целиком; без возраста и ручного максимума
+   зоны не считаются, и подпись зоны 2 обходится без доли попаданий. */
+export type WeekSettings = GoalsSource & Partial<Pick<Settings, 'birthYear' | 'maxHrMode' | 'maxHrManual' | 'restingHr'>>
+
+/* Границы зоны 2 по настройкам человека на дату; null, если максимум неизвестен. */
+function weekZoneBounds(settings: WeekSettings | undefined, date: DateISO): ZoneBounds | null {
+  if (!settings) return null
+  const maxHr = maxHrFromSettings({
+    birthYear: settings.birthYear ?? null,
+    maxHrMode: settings.maxHrMode ?? 'formula',
+    maxHrManual: settings.maxHrManual ?? null,
+  }, date)
+  return zoneBounds(maxHr, settings.restingHr)
+}
+
 export function exerciseLookup(state: AppState, library?: ExerciseLibrary): ExerciseLibrary {
   return { ...(library ?? {}), ...(state.customExercises ?? {}) }
 }
@@ -109,12 +137,15 @@ interface Facts {
   groups: Record<MuscleGroup, number>
   zone2Min: number
   zone2Sessions: number
+  hrSessions: number              // сессии зоны 2 с введённым средним пульсом (только при известных границах зон)
+  hrInZone: number                // из них со средним пульсом внутри зоны 2
   intervalSessions: number
   hardMin: number
   mobilityMin: number
   balanceMin: number
   zoneMin: Record<MobilityZone, number>
   bestBalanceSec: number
+  externalStrengthMin: number     // минуты силы внешних занятий: в шкалу силы не идут, только строка на экране столпа
 }
 
 function emptyGroups(): Record<MuscleGroup, number> {
@@ -123,10 +154,11 @@ function emptyGroups(): Record<MuscleGroup, number> {
 
 function emptyFacts(): Facts {
   return {
-    strengthSets: 0, groups: emptyGroups(), zone2Min: 0, zone2Sessions: 0, intervalSessions: 0,
+    strengthSets: 0, groups: emptyGroups(), zone2Min: 0, zone2Sessions: 0, hrSessions: 0, hrInZone: 0, intervalSessions: 0,
     hardMin: 0, mobilityMin: 0, balanceMin: 0,
     zoneMin: { hips: 0, spine: 0, ankles: 0, hamstrings: 0, shoulders: 0 },
     bestBalanceSec: 0,
+    externalStrengthMin: 0,
   }
 }
 
@@ -135,12 +167,15 @@ function addFacts(into: Facts, from: Facts): void {
   for (const g of MUSCLE_GROUPS) into.groups[g] += from.groups[g]
   into.zone2Min += from.zone2Min
   into.zone2Sessions += from.zone2Sessions
+  into.hrSessions += from.hrSessions
+  into.hrInZone += from.hrInZone
   into.intervalSessions += from.intervalSessions
   into.hardMin += from.hardMin
   into.mobilityMin += from.mobilityMin
   into.balanceMin += from.balanceMin
   for (const z of MOBILITY_ZONES) into.zoneMin[z] += from.zoneMin[z]
   into.bestBalanceSec = Math.max(into.bestBalanceSec, from.bestBalanceSec)
+  into.externalStrengthMin += from.externalStrengthMin
 }
 
 function addPillarMinutes(facts: Facts, pillar: Pillar, minutes: number, zone?: MobilityZone): void {
@@ -153,7 +188,7 @@ function addPillarMinutes(facts: Facts, pillar: Pillar, minutes: number, zone?: 
 }
 
 function itemFacts(item: SessionItem, lookup: ExerciseLibrary, facts: Facts): void {
-  const exercise = lookup[item.exerciseId]
+  const exercise = item.type === 'external' ? undefined : lookup[item.exerciseId]
   switch (item.type) {
     case 'strength': {
       const sets = Array.isArray(item.sets) ? item.sets : []
@@ -170,9 +205,10 @@ function itemFacts(item: SessionItem, lookup: ExerciseLibrary, facts: Facts): vo
         let best = 0
         for (const set of sets) {
           if (set.kind === 'warmup') continue
-          const s = amount(set.seconds)
-          seconds += s
-          best = Math.max(best, s)
+          const held = amount(set.seconds)
+          // подход без секунд, но с повторами: время оценивается; в лучшую стойку оценка не идёт
+          seconds += held > 0 ? held : amount(set.reps) * SECONDS_PER_REP
+          best = Math.max(best, held)
         }
         addPillarMinutes(facts, pillar, seconds / 60, exercise?.zone)
         if (pillar === 'balance') facts.bestBalanceSec = Math.max(facts.bestBalanceSec, best)
@@ -208,8 +244,10 @@ function itemFacts(item: SessionItem, lookup: ExerciseLibrary, facts: Facts): vo
       return
     }
     case 'external': {
-      // внешние минуты силы в шкалу силы не идут: у силы единица - подходы
+      // внешние минуты силы в шкалу силы не идут (у силы единица - подходы),
+      // они копятся отдельно для строки на экране столпа (раздел 3.7)
       const split = item.split ?? {}
+      facts.externalStrengthMin += amount(split.strength)
       const zone2 = amount(split.zone2)
       facts.zone2Min += zone2
       if (zone2 > 0) facts.zone2Sessions = 1
@@ -223,13 +261,34 @@ function itemFacts(item: SessionItem, lookup: ExerciseLibrary, facts: Facts): vo
   }
 }
 
-function sessionFacts(session: Session, lookup: ExerciseLibrary): Facts {
+/* Средний пульс кардио-записей сессии, взвешенный по длительности (запись без
+   длительности весит как одна секунда); null, если пульс нигде не введён. */
+function sessionAvgHr(session: Session): number | null {
+  let weighted = 0
+  let weight = 0
+  for (const item of Array.isArray(session.items) ? session.items : []) {
+    if (!item || item.type !== 'cardio') continue
+    const hr = amount(item.avgHr)
+    if (hr === 0) continue
+    const w = amount(item.durationSec) || 1
+    weighted += hr * w
+    weight += w
+  }
+  return weight > 0 ? weighted / weight : null
+}
+
+function sessionFacts(session: Session, lookup: ExerciseLibrary, bounds: ZoneBounds | null = null): Facts {
   const facts = emptyFacts()
   for (const item of Array.isArray(session.items) ? session.items : []) {
     if (item) itemFacts(item, lookup, facts)
   }
   // zone2Sessions считается по сессии, а не по записи: две кардио-записи подряд это одна сессия
   facts.zone2Sessions = Math.min(facts.zone2Sessions, 1)
+  const verdict = checkZone2(sessionAvgHr(session), bounds)
+  if (verdict !== null) {
+    facts.hrSessions = 1
+    if (verdict === 'in') facts.hrInZone = 1
+  }
   return facts
 }
 
@@ -240,14 +299,16 @@ interface WeekFacts {
   byDate: Map<DateISO, Facts>
 }
 
-function collectWeek(state: AppState, weekStart: DateISO, lookup: ExerciseLibrary): WeekFacts {
+function collectWeek(
+  state: AppState, weekStart: DateISO, lookup: ExerciseLibrary, bounds: ZoneBounds | null = null,
+): WeekFacts {
   const start = weekStartOf(weekStart)
   const end = addDays(start, 6)
   const total = emptyFacts()
   const byDate = new Map<DateISO, Facts>()
   for (const session of countedSessions(state)) {
     if (session.date < start || session.date > end) continue
-    const facts = sessionFacts(session, lookup)
+    const facts = sessionFacts(session, lookup, bounds)
     addFacts(total, facts)
     const day = byDate.get(session.date) ?? emptyFacts()
     addFacts(day, facts)
@@ -275,6 +336,18 @@ export function workingSetsByGroup(
 /* Число силовых дней недели: дат с шестью рабочими подходами и больше. */
 export function strengthDays(state: AppState, weekStart: DateISO, library?: ExerciseLibrary): number {
   return countDays(collectWeek(state, weekStart, exerciseLookup(state, library)), f => f.strengthSets, STRENGTH_DAY_MIN_SETS)
+}
+
+/* Минуты силовой работы внешних занятий недели (ExternalItem.split.strength,
+   пилатес, скалолазание), целые. В подходы и шкалу силы не переводятся. */
+export function externalStrengthMinutes(state: AppState, weekStart: DateISO): number {
+  return Math.round(collectWeek(state, weekStart, exerciseLookup(state)).total.externalStrengthMin)
+}
+
+/* Строка экрана столпа силы по разделу 3.7; null, если таких минут нет. */
+export function externalStrengthText(minutes: number): string | null {
+  const n = Number.isFinite(minutes) ? Math.round(minutes) : 0
+  return n > 0 ? `ещё ${n} ${minutesWord(n)} силовой работы вне приложения` : null
 }
 
 /* Минуты мобильности недели по зонам (ориентир плана: 10 минут на зону). */
@@ -307,13 +380,22 @@ export function dayLoad(state: AppState, date: DateISO, library?: ExerciseLibrar
 
 /* ---- сборка PillarProgress ---- */
 
-function round1(n: number): number {
-  return Math.round(n * 10) / 10
+/* Минуты складываются из секунд делением, поэтому ровные 150 могут прийти как
+   149,99999999999997. Допуск EPS гасит только эту погрешность, а не нехватку. */
+const EPS = 1e-9
+
+/* Показ вниз: 149,5 минуты не рисуются как выполненные 150, 7,96 тяжёлой минуты как 8. */
+function floorMin(n: number): number {
+  return Math.floor(n + EPS)
+}
+function floor1(n: number): number {
+  return Math.floor(n * 10 + EPS) / 10
 }
 
 interface BuildArgs {
   pillar: Pillar
-  value: number
+  value: number                   // для показа: минуты округлены вниз, чтобы шкала не показывала цель, которой ещё нет
+  exact?: number                  // точное значение для сравнений с целью и минимумом; по умолчанию value
   target: number
   minimum: number
   secondary?: { value: number; target: number }
@@ -321,6 +403,7 @@ interface BuildArgs {
 }
 
 function buildProgress(a: BuildArgs): PillarProgress {
+  const exact = a.exact ?? a.value
   const secondaryOk = !SECONDARY_GATES[a.pillar] || !a.secondary || a.secondary.value >= a.secondary.target
   const unit: PillarUnit = PILLAR_UNIT[a.pillar]
   const progress: PillarProgress = {
@@ -329,9 +412,9 @@ function buildProgress(a: BuildArgs): PillarProgress {
     target: a.target,
     minimum: Math.min(a.minimum, a.target),
     unit,
-    ratio: a.value / a.target,
-    done: a.value >= a.target && secondaryOk,
-    reachedMinimum: a.value >= Math.min(a.minimum, a.target),
+    ratio: exact / a.target,
+    done: exact + EPS >= a.target && secondaryOk,
+    reachedMinimum: exact + EPS >= Math.min(a.minimum, a.target),
     detail: a.detail,
   }
   if (a.secondary) progress.secondary = a.secondary
@@ -352,12 +435,13 @@ function progressFor(pillar: Pillar, week: WeekFacts, goals: WeeklyGoals): Pilla
     case 'zone2': {
       const sessions = [...week.byDate.values()].reduce((n, f) => n + f.zone2Sessions, 0)
       return buildProgress({
-        pillar, value: Math.round(t.zone2Min), target: goals.zone2Minutes, minimum: WEEK_MINIMUMS.zone2Minutes,
-        detail: `${sessions} ${sessionsWord(sessions)}`,
+        pillar, value: floorMin(t.zone2Min), exact: t.zone2Min, target: goals.zone2Minutes, minimum: WEEK_MINIMUMS.zone2Minutes,
+        detail: `${sessions} ${sessionsWord(sessions)}` +
+          (t.hrSessions > 0 ? `, пульс в зоне 2: ${t.hrInZone} из ${t.hrSessions}` : ''),
       })
     }
     case 'intervals': {
-      const hard = round1(t.hardMin)
+      const hard = floor1(t.hardMin)
       return buildProgress({
         pillar, value: t.intervalSessions, target: goals.intervalSessions, minimum: WEEK_MINIMUMS.intervalSessions,
         secondary: { value: hard, target: goals.intervalHardMinutes },
@@ -367,7 +451,7 @@ function progressFor(pillar: Pillar, week: WeekFacts, goals: WeeklyGoals): Pilla
     case 'mobility': {
       const days = countDays(week, f => f.mobilityMin, DAY_MIN_MINUTES)
       return buildProgress({
-        pillar, value: Math.round(t.mobilityMin), target: goals.mobilityMinutes, minimum: WEEK_MINIMUMS.mobilityMinutes,
+        pillar, value: floorMin(t.mobilityMin), exact: t.mobilityMin, target: goals.mobilityMinutes, minimum: WEEK_MINIMUMS.mobilityMinutes,
         secondary: { value: days, target: goals.mobilityDays },
         detail: `дней: ${days} из ${goals.mobilityDays}`,
       })
@@ -376,7 +460,7 @@ function progressFor(pillar: Pillar, week: WeekFacts, goals: WeeklyGoals): Pilla
       const days = countDays(week, f => f.balanceMin, DAY_MIN_MINUTES)
       const best = Math.round(t.bestBalanceSec)
       return buildProgress({
-        pillar, value: Math.round(t.balanceMin), target: goals.balanceMinutes, minimum: WEEK_MINIMUMS.balanceMinutes,
+        pillar, value: floorMin(t.balanceMin), exact: t.balanceMin, target: goals.balanceMinutes, minimum: WEEK_MINIMUMS.balanceMinutes,
         secondary: { value: days, target: goals.balanceDays },
         detail: `дней: ${days} из ${goals.balanceDays}` + (best > 0 ? `, лучшая стойка ${best} с` : ''),
       })
@@ -393,32 +477,34 @@ function summarize(week: WeekFacts, weekStart: DateISO, goals: WeeklyGoals): Wee
 /* Итог недели по пяти столпам. weekStart приводится к понедельнику. Цели берутся
    из settings, а без него из state.settings; мусор в целях заменяется умолчаниями. */
 export function weekProgress(
-  state: AppState, weekStart: DateISO, settings?: GoalsSource, library?: ExerciseLibrary,
+  state: AppState, weekStart: DateISO, settings?: WeekSettings, library?: ExerciseLibrary,
 ): WeekSummary {
   const start = weekStartOf(weekStart)
-  const goals = normalizeGoals((settings ?? state.settings)?.goals)
-  return summarize(collectWeek(state, start, exerciseLookup(state, library)), start, goals)
+  const source = settings ?? state.settings
+  const goals = normalizeGoals(source?.goals)
+  return summarize(collectWeek(state, start, exerciseLookup(state, library), weekZoneBounds(source, start)), start, goals)
 }
 
 /* Один столп недели. */
 export function pillarProgress(
-  state: AppState, weekStart: DateISO, pillar: Pillar, settings?: GoalsSource, library?: ExerciseLibrary,
+  state: AppState, weekStart: DateISO, pillar: Pillar, settings?: WeekSettings, library?: ExerciseLibrary,
 ): PillarProgress {
   return weekProgress(state, weekStart, settings, library).pillars[pillar]
 }
 
 /* Последние n недель по возрастанию: последняя - неделя даты today. */
 export function weekHistory(
-  state: AppState, today: DateISO, n = 8, settings?: GoalsSource, library?: ExerciseLibrary,
+  state: AppState, today: DateISO, n = 8, settings?: WeekSettings, library?: ExerciseLibrary,
 ): WeekSummary[] {
   const count = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0
   const current = weekStartOf(today)
-  const goals = normalizeGoals((settings ?? state.settings)?.goals)
+  const source = settings ?? state.settings
+  const goals = normalizeGoals(source?.goals)
   const lookup = exerciseLookup(state, library)
   const out: WeekSummary[] = []
   for (let i = count - 1; i >= 0; i--) {
     const start = addDays(current, -7 * i)
-    out.push(summarize(collectWeek(state, start, lookup), start, goals))
+    out.push(summarize(collectWeek(state, start, lookup, weekZoneBounds(source, start)), start, goals))
   }
   return out
 }

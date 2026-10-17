@@ -20,10 +20,13 @@ import type {
   ActiveSession, AppState, CardioItem, CardioMode, DateISO, Equipment, Exercise, ExerciseDefaults,
   ExternalItem, Hold, HoldItem, HoldRun, IntervalItem, IntervalProtocol, IntervalRun, InputKind, Millis,
   MobilityZone, MuscleGroup, Pillar, Place, PlannedSet, ProgramProgress, ProgramRef, RestTimer, Session,
-  SessionItem, SetKind, Settings, Side, SoundMode, Stopwatch, StrengthItem, StrengthSet, Template,
-  TemplateItem, TestResult, WeeklyGoals,
+  SessionItem, SetKind, Settings, Side, SoundMode, Split, Stopwatch, StrengthItem, StrengthSet, Template,
+  TemplateItem, TestResult, WeeklyGoals, CustomProtocolParams,
 } from '../core/types'
 import { isDateISO } from '../core/dates'
+import {
+  BODY_WEIGHT_MAX_KG, CUSTOM_PROTOCOL_LIMITS, HR_MAX, HR_MIN, LOAD_MAX_KG, REST_MAX_SEC, RIR_MAX, RPE_MAX, RPE_MIN, isMillis,
+} from '../core/limits'
 
 /** Текущая версия формата, одна на AppState и ActiveSession.
     v1: первая версия, миграция сводится к санитизации.
@@ -115,14 +118,6 @@ const TEMPLATE_SOURCES: Record<NonNullable<Template['source']>, true> = {
 /* Границы правдоподобия. Значение за ними - порча, а не рекорд. */
 const BIRTH_YEAR_MIN = 1900
 const BIRTH_YEAR_MAX = 2100
-const BODY_WEIGHT_MAX_KG = 400
-const LOAD_MAX_KG = 1000
-const HR_MIN = 20
-const HR_MAX = 260
-const RIR_MAX = 5
-const RPE_MIN = 1
-const RPE_MAX = 10
-const REST_MAX_SEC = 3600
 const MAX_GROUPS_PER_EXERCISE = 2
 const TRAINING_DAYS_PER_WEEK = 3
 
@@ -148,8 +143,8 @@ const isPositiveFinite = (v: unknown): v is number => isFiniteNumber(v) && v > 0
 const isNonNegFinite = (v: unknown): v is number => isFiniteNumber(v) && v >= 0
 const isNonNegInt = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0
 const isPositiveInt = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0
-/** Отметка времени Millis: конечное неотрицательное число. */
-const isTimestamp = isNonNegFinite
+/** Отметка времени Millis: конечное неотрицательное число (core/limits). */
+const isTimestamp = isMillis
 const isDate = (v: unknown): v is DateISO => isDateISO(v)
 
 function intIn(min: number, max: number): Guard<number> {
@@ -297,12 +292,19 @@ function sanitizePlannedSet(v: unknown): PlannedSet | null {
   return compact<PlannedSet>({ kind: v.kind, reps, seconds, side })
 }
 
-/** Общая часть элемента: id, exerciseId, note. null - элемент не опознать. */
-function itemBase(v: Raw): { id: string; exerciseId: string; note?: string } | null {
-  if (!isNonEmptyString(v.id) || !isNonEmptyString(v.exerciseId)) return null
+/** Общая часть любого элемента: id, note. null - элемент не опознать. */
+function itemBase(v: Raw): { id: string; note?: string } | null {
+  if (!isNonEmptyString(v.id)) return null
   const note = opt(v.note, isString)
   if (note === BAD) return null
-  return compact({ id: v.id, exerciseId: v.exerciseId, note })
+  return compact({ id: v.id, note })
+}
+
+/** Общая часть элемента с упражнением из библиотеки: id, exerciseId, note. */
+function exerciseItemBase(v: Raw): { id: string; exerciseId: string; note?: string } | null {
+  const base = itemBase(v)
+  if (!base || !isNonEmptyString(v.exerciseId)) return null
+  return compact({ id: base.id, exerciseId: v.exerciseId, note: base.note })
 }
 
 /** Список, где битый элемент выпадает один и считается. */
@@ -321,7 +323,7 @@ function sanitizeList<T>(v: unknown, one: (x: unknown) => T | null): { list: T[]
 
 export function sanitizeStrengthItem(v: unknown): Sanitized<StrengthItem> {
   if (!isPlainObject(v) || v.type !== 'strength') return { value: null, dropped: 0 }
-  const base = itemBase(v)
+  const base = exerciseItemBase(v)
   if (!base || !(oneOf(STRENGTH_UNITS))(v.unit) || !intIn(0, REST_MAX_SEC)(v.restSec)) return { value: null, dropped: 0 }
   const goal = opt(v.goal, (x: unknown): x is { kind: 'total-reps'; reps: number } =>
     isPlainObject(x) && x.kind === 'total-reps' && isPositiveInt(x.reps))
@@ -344,7 +346,7 @@ export function sanitizeStrengthItem(v: unknown): Sanitized<StrengthItem> {
 
 export function sanitizeCardioItem(v: unknown): CardioItem | null {
   if (!isPlainObject(v) || v.type !== 'cardio') return null
-  const base = itemBase(v)
+  const base = exerciseItemBase(v)
   if (!base || !isCardioMode(v.mode) || !isNonNegInt(v.durationSec)) return null
   const distanceKm = opt(v.distanceKm, isPositiveFinite)
   const avgHr = opt(v.avgHr, isHeartRate)
@@ -369,7 +371,7 @@ export function sanitizeIntervalProtocol(v: unknown): IntervalProtocol | null {
 
 export function sanitizeIntervalItem(v: unknown): IntervalItem | null {
   if (!isPlainObject(v) || v.type !== 'intervals') return null
-  const base = itemBase(v)
+  const base = exerciseItemBase(v)
   const protocol = sanitizeIntervalProtocol(v.protocol)
   if (!base || !isCardioMode(v.mode) || !protocol) return null
   if (!intIn(0, protocol.rounds)(v.roundsDone)) return null
@@ -388,7 +390,7 @@ function sanitizeHold(v: unknown): Hold | null {
 
 export function sanitizeHoldItem(v: unknown): Sanitized<HoldItem> {
   if (!isPlainObject(v) || v.type !== 'hold') return { value: null, dropped: 0 }
-  const base = itemBase(v)
+  const base = exerciseItemBase(v)
   if (!base || !isBoolean(v.perSide) || !isNonNegInt(v.plannedSets) || !isNonNegInt(v.plannedSeconds)) {
     return { value: null, dropped: 0 }
   }
@@ -413,7 +415,7 @@ export function sanitizeExternalItem(v: unknown): Sanitized<ExternalItem> {
   const rpe = opt(v.rpe, intIn(RPE_MIN, RPE_MAX))
   if (rpe === BAD) return { value: null, dropped: 0 }
   const durationMin = v.durationMin
-  let split: Partial<Record<Pillar, number>> = {}
+  let split: Split = {}
   let dropped = 0
   if (isPlainObject(v.split)) {
     const entries = Object.entries(v.split)
@@ -507,6 +509,7 @@ export function sanitizeSession(v: unknown): Sanitized<Session> {
       items,
       note: optField(v.note, guarded(isString)),
       excludeFromWeek: optField(v.excludeFromWeek, guarded(isBoolean)),
+      energyKcal: optField(v.energyKcal, guarded(isPositiveFinite)),
       health: optField(v.health, (x: unknown) =>
         isPlainObject(x) && isTimestamp(x.sentAt) && isBoolean(x.confirmed) ? { sentAt: x.sentAt, confirmed: x.confirmed } : null),
     }),
@@ -562,6 +565,15 @@ export function sanitizeExercise(v: unknown): Exercise | null {
   })
 }
 
+/** Значения своего протокола: целые в пределах CUSTOM_PROTOCOL_LIMITS. */
+function isCustomProtocolParams(v: unknown): v is CustomProtocolParams {
+  if (!isPlainObject(v)) return false
+  return (Object.keys(CUSTOM_PROTOCOL_LIMITS) as (keyof CustomProtocolParams)[]).every(key => {
+    const [min, max] = CUSTOM_PROTOCOL_LIMITS[key]
+    return intIn(min, max)(v[key])
+  })
+}
+
 function sanitizeTemplateItem(v: unknown): TemplateItem | null {
   if (!isPlainObject(v) || !isNonEmptyString(v.exerciseId)) return null
   const sets = opt(v.sets, isNonNegInt)
@@ -571,14 +583,20 @@ function sanitizeTemplateItem(v: unknown): TemplateItem | null {
   const restSec = opt(v.restSec, intIn(0, REST_MAX_SEC))
   const minutes = opt(v.minutes, isPositiveFinite)
   const protocolId = opt(v.protocolId, isNonEmptyString)
+  const customProtocol = opt(v.customProtocol, isCustomProtocolParams)
   const cue = opt(v.cue, isString)
   if (sets === BAD || reps === BAD || seconds === BAD || perSide === BAD || restSec === BAD || minutes === BAD ||
-      protocolId === BAD || cue === BAD) return null
+      protocolId === BAD || customProtocol === BAD || cue === BAD) return null
   return compact<TemplateItem>({
     exerciseId: v.exerciseId,
     sets,
     reps: Array.isArray(reps) ? [reps[0], reps[1]] : reps,
-    seconds, perSide, restSec, minutes, protocolId, cue,
+    seconds, perSide, restSec, minutes, protocolId,
+    customProtocol: customProtocol && {
+      workSec: customProtocol.workSec, restSec: customProtocol.restSec, rounds: customProtocol.rounds,
+      warmupSec: customProtocol.warmupSec, cooldownSec: customProtocol.cooldownSec,
+    },
+    cue,
   })
 }
 
@@ -625,9 +643,12 @@ export function sanitizeProgramProgress(v: unknown): Sanitized<ProgramProgress> 
   const exitConfirmedAt = opt(v.exitConfirmedAt, isTimestamp)
   const stoppedAt = opt(v.stoppedAt, isTimestamp)
   if (exitConfirmedAt === BAD || stoppedAt === BAD) return { value: null, dropped: 0 }
-  const completed = sanitizeList(v.completedDays, (x: unknown) =>
-    isPlainObject(x) && isDate(x.date) && isNonEmptyString(x.dayKey) && isNonEmptyString(x.sessionId)
-      ? { date: x.date, dayKey: x.dayKey, sessionId: x.sessionId } : null)
+  const completed = sanitizeList(v.completedDays, (x: unknown) => {
+    if (!isPlainObject(x) || !isDate(x.date) || !isNonEmptyString(x.dayKey) || !isNonEmptyString(x.sessionId)) return null
+    const phaseIndex = opt(x.phaseIndex, isNonNegInt)
+    if (phaseIndex === BAD) return null
+    return compact({ date: x.date, dayKey: x.dayKey, sessionId: x.sessionId, phaseIndex })
+  })
   const measurements = sanitizeList(v.measurements, (x: unknown) =>
     isPlainObject(x) && isDate(x.date) && isNonNegInt(x.reps) ? { date: x.date, reps: x.reps } : null)
   return {
@@ -868,10 +889,12 @@ export function migrateActive(raw: Record<string, unknown>, rawVersion: number):
   const hold = take(sanitizeTimer<HoldRun>(raw.hold, itemIds, x => {
     if (!isNonNegInt(x.stepIndex) || !isTimestamp(x.stepStartedAt) || !isTimestamp(x.stepEndsAt) ||
         x.stepEndsAt < x.stepStartedAt) return null
-    const paused = opt(x.paused, isBoolean)
-    if (paused === BAD) return null
+    const stepStartedAt = x.stepStartedAt
+    const stepEndsAt = x.stepEndsAt
+    const pausedAt = opt(x.pausedAt, (p: unknown): p is number => isTimestamp(p) && p >= stepStartedAt && p <= stepEndsAt)
+    if (pausedAt === BAD) return null
     return compact<HoldRun>({
-      itemId: x.itemId as string, stepIndex: x.stepIndex, stepStartedAt: x.stepStartedAt, stepEndsAt: x.stepEndsAt, paused,
+      itemId: x.itemId as string, stepIndex: x.stepIndex, stepStartedAt, stepEndsAt, pausedAt,
     })
   }))
   let wakeLockWanted = false

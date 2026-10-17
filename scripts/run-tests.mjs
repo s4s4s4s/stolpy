@@ -43,7 +43,7 @@ for (const file of files) {
       logLevel: 'silent'
     })
   } catch (err) {
-    console.error(`Сборка не удалась: ${err.message}`)
+    console.error(`Сборка не удалась: ${err instanceof Error ? err.message : String(err)}`)
     results.push({ file, ok: false, reason: 'сборка' })
     continue
   }

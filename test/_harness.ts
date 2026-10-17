@@ -127,18 +127,26 @@ export function finish(): void {
 
 /** Контракт хранилища (совпадает структурно с StorageDriver из src/state/driver.ts). */
 export interface FakeDriverShape {
-  name: 'memory'
+  name: 'idb' | 'local' | 'memory'
   get(key: string): Promise<string | null>
   set(key: string, value: string): Promise<void>
   remove(key: string): Promise<void>
+  keys(prefix?: string): Promise<string[]>
 }
 
 /** Драйвер в памяти для тестов хранилища. `data` позволяет посмотреть
-    содержимое, `failWrites = true` заставляет set бросать (проверка ошибок записи). */
+    содержимое, `failWrites = true` заставляет set бросать (проверка ошибок
+    записи), `failRemoves = true` - то же для remove. Имя задаётся в
+    конструкторе: сверка с запасным носителем включается только у 'idb'. */
 export class FakeDriver implements FakeDriverShape {
-  readonly name = 'memory' as const
+  readonly name: FakeDriverShape['name']
   readonly data = new Map<string, string>()
   failWrites = false
+  failRemoves = false
+
+  constructor(name: FakeDriverShape['name'] = 'memory') {
+    this.name = name
+  }
 
   async get(key: string): Promise<string | null> {
     return this.data.has(key) ? this.data.get(key)! : null
@@ -150,7 +158,12 @@ export class FakeDriver implements FakeDriverShape {
   }
 
   async remove(key: string): Promise<void> {
+    if (this.failRemoves) throw new Error('FakeDriver: удаление отключено (failRemoves)')
     this.data.delete(key)
+  }
+
+  async keys(prefix = ''): Promise<string[]> {
+    return [...this.data.keys()].filter(k => k.startsWith(prefix)).sort()
   }
 }
 

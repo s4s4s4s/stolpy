@@ -1,4 +1,5 @@
 import { assert, assertEqual, finish, group } from './_harness.ts'
+import { addDays } from '../src/core/dates.ts'
 import {
   DAILY_LIGHT_PHASES, EVENING_HOUR, programToday, recentlyTrainedGroups, whatToday,
 } from '../src/core/recommend.ts'
@@ -67,10 +68,25 @@ group('давление: последний день недели', () => {
 group('давление: частичное выполнение сокращает остаток, нехватка по дням тоже считается', () => {
   const state = stateOf(...fullWeek(MON, ['zone2']), session(MON, [cardio(100)], { hour: 6 }))
   assertEqual(whatToday(input(state, SAT)).primary.reason, 'Зона 2: осталось 50 минут, до конца недели 2 дня.', 'остаток минут')
-  const oneDay = stateOf(...fullWeek(MON, ['mobility']), session(MON, [hold('stretch-hip', [1800])]))
+  // 149,5 минуты: цель не закрыта, и остаток не пустой (полминуты показываются как одна минута)
+  const almost = stateOf(...fullWeek(MON, ['zone2']), session(MON, [{ ...cardio(0), durationSec: 149.5 * 60 }], { hour: 6 }))
+  assertEqual(whatToday(input(almost, SAT)).primary.reason, 'Зона 2: осталось 1 минута, до конца недели 2 дня.', 'остаток на границе полминуты')
+  // у силы три дня входят в условие выполнения (решение 0.6, раздел 4.1)
+  const oneDay = stateOf(...fullWeek(MON, ['strength']), session(MON, [strength('squat', 25), strength('row', 25)]))
   const r = whatToday(input(oneDay, SAT))
-  assertEqual(r.primary.pillar, 'mobility', 'минуты набраны, но дней 1 из 3')
-  assertEqual(r.primary.reason, 'Мобильность: осталось 2 дня, до конца недели 2 дня.', 'нехватка только по дням')
+  assertEqual(r.primary.pillar, 'strength', 'подходы набраны, но силовых дней 1 из 3')
+  assertEqual(r.primary.reason, 'Сила: осталось 2 дня, до конца недели 2 дня.', 'нехватка только по дням')
+  // у мобильности дни справочные (раздел 4.4): 30 минут за один день закрывают столп
+  const mobilityOneDay = stateOf(...fullWeek(MON, ['mobility']), session(MON, [hold('stretch-hip', [1800])]))
+  const m = whatToday(input(mobilityOneDay, SAT))
+  assert(m.primary.pillar !== 'mobility' && m.alternatives.every(s => s.pillar !== 'mobility'),
+    'мобильность 30 из 30 за один день не предлагается: дни не входят в выполнение')
+})
+
+group('давление: у мобильности недобор называет только минуты, без дней', () => {
+  const state = stateOf(...fullWeek(MON, ['mobility']), session(MON, [hold('stretch-hip', [600])]))
+  const r = whatToday(input(state, SAT))
+  assertEqual(r.primary.reason, 'Мобильность: осталось 20 минут, до конца недели 2 дня.', 'дни мобильности в остаток не входят')
 })
 
 group('один тяжёлый столп в день: побеждает больший недобор, второй переносится', () => {
@@ -284,7 +300,9 @@ group('программа: не тренировочный день, отмеч�
   assertEqual(programToday(active({ stoppedAt: 1 }), MON), null, 'программа остановлена')
   assertEqual(programToday(active({ startedOn: '2026-10-19' }), MON), null, 'ещё не началась')
   assertEqual(programToday(active({ startedOn: '2025-01-06' }), MON), null, 'срок 56 недель вышел')
-  assertEqual(programToday(active({ phaseIndex: 9 }), MON), null, 'нет такой фазы')
+  assertEqual(programToday(active({ phaseIndex: 9 }), MON)?.phaseIndex, 2, 'фаза за пределами списка: как в program.ts, последняя')
+  assertEqual(programToday(active({ programId: 'other' }), MON), null, 'прогресс чужой программы')
+  assertEqual(programToday(active({}, { ...PROGRAM, phases: [] }), MON), null, 'в программе нет фаз')
   assertEqual(programToday(null, MON), null, 'нет программы')
   assertEqual(programToday(undefined, MON), null, 'программа не передана')
   const noDay = { ...PROGRAM, phases: [phase('f0', { rotation: ['Z'] })] }
@@ -303,8 +321,11 @@ group('программа: ротация дня продолжается скв
   assertEqual(inF1({ completedDays: done(MON) })?.dayKey, 'B', 'один день - B')
   assertEqual(inF1({ startedOn: '2026-10-05', completedDays: done('2026-10-05', MON) })?.dayKey, 'A', 'два дня - снова A')
   assertEqual(inF1({ phaseStartedWeek: 1, completedDays: done(MON) })?.weekInPhase, 1, 'неделя фазы')
-  const wed2 = programToday(active({ phaseIndex: 1, phaseStartedWeek: 2, completedDays: done(MON) }), '2026-10-21')
-  assertEqual(wed2?.dayKey, 'A', 'дни прошлой фазы (до недели 2) не считаются')
+  const confirmed = new Date(2026, 9, 19, 9, 0).getTime()   // переход подтверждён в понедельник недели 2
+  const wed2 = programToday(
+    active({ phaseIndex: 1, phaseStartedWeek: 2, exitConfirmedAt: confirmed, completedDays: done(MON) }), '2026-10-21',
+  )
+  assertEqual(wed2?.dayKey, 'A', 'дни до подтверждения перехода не считаются')
   assertEqual(wed2?.weekInPhase, 1, 'вторая сквозная неделя - первая недели фазы')
 })
 
@@ -316,9 +337,26 @@ group('программа: разгрузочная неделя, неделя �
   assertEqual(t?.deload, true, 'разгрузка')
   assertEqual(programToday(active(), '2026-10-26')?.deload, false, 'неделя 3 - обычная')
   const r = whatToday(input(baseState(), nov2, 10, { program: active() }))
-  assert(r.primary.reason.endsWith('Разгрузочная неделя: подходов меньше.'), 'в причине про разгрузку')
+  assertEqual(r.primary.reason, 'День A, фаза «Фаза f0». Разгрузочная неделя: подходов меньше. Пора замерить максимум.', 'причина: разгрузка и замер')
   const noDeload = programToday(active({}, { ...PROGRAM, deloadEveryWeeks: 0 }), nov2)
   assertEqual(noDeload?.deload, false, 'разгрузки в программе нет')
+})
+
+group('программа: замер раз в 14 дней, подсказка в причине', () => {
+  const day = (offset: number): string => addDays(MON, offset)   // 0, 14, 28 - понедельники; 11, 25 - пятницы
+  const at = (progress: Partial<ProgramProgress>, date: string) => programToday(active(progress), date)
+  assertEqual(at({}, MON)?.measurementDue, false, 'в день старта замера нет')
+  assertEqual(at({}, day(11))?.measurementDue, false, 'на 11-е сутки рано (пятница недели 2)')
+  assertEqual(at({}, day(14))?.measurementDue, true, 'на 14-е сутки пора')
+  assertEqual(at({ measurements: [{ date: day(14), reps: 5 }] }, day(14))?.measurementDue, false, 'в день замера не нужен')
+  assertEqual(at({ measurements: [{ date: day(14), reps: 5 }] }, day(25))?.measurementDue, false, '11 суток после замера')
+  assertEqual(at({ measurements: [{ date: day(14), reps: 5 }] }, day(28))?.measurementDue, true, '14 суток после замера')
+  const due = whatToday(input(baseState(), day(14), 10, { program: active() }))
+  assert(due.primary.reason.includes('Пора замерить максимум.'), 'в причине про замер')
+  const notDue = whatToday(input(baseState(), MON, 10, { program: active() }))
+  assert(!notDue.primary.reason.includes('замерить'), 'без замера причина чистая')
+  const every7 = { ...PROGRAM, measurement: { ...PROGRAM.measurement, everyDays: 7 } }
+  assertEqual(programToday(active({}, every7), day(7))?.measurementDue, true, 'период берётся из программы')
 })
 
 group('ежедневная мелочь: фазы f0-f2, один раз в день', () => {

@@ -1,8 +1,9 @@
 import { canDoHere } from './library'
-import type { Library } from './library'
 import { PILLARS } from './pillars'
+import { CUSTOM_PROTOCOL_ID } from './session'
 import type {
-  AppState, Equipment, Exercise, IntervalProtocol, Millis, Pillar, Place, Template, TemplateItem,
+  AppState, Equipment, Exercise, ExerciseLibrary, IntervalProtocol, Millis, Pillar, Place, ProtocolLibrary, Split,
+  Template, TemplateItem,
 } from './types'
 
 /* Работа с шаблонами: что выполнимо в месте, какие столпы закрывает шаблон и
@@ -25,7 +26,7 @@ export function templatesFor(
   templates: readonly Template[],
   place: Place,
   equipment: readonly Equipment[],
-  library: Library,
+  library: ExerciseLibrary,
 ): Template[] {
   return templates.filter(template => {
     if (template.place !== 'any' && template.place !== place) return false
@@ -37,7 +38,7 @@ export function templatesFor(
 }
 
 /** Id упражнений шаблона, которых нет в библиотеке (удалены), без повторов, в порядке шаблона. */
-export function missingExercises(template: Template, library: Library): string[] {
+export function missingExercises(template: Template, library: ExerciseLibrary): string[] {
   const missing: string[] = []
   for (const item of template.items) {
     if (library[item.exerciseId] === undefined && !missing.includes(item.exerciseId)) missing.push(item.exerciseId)
@@ -61,7 +62,7 @@ export interface TemplateCoverage {
   /** Закрываемые столпы в порядке PILLARS. */
   pillars: Pillar[]
   /** Примерные минуты по каждому закрытому столпу, целые, не меньше 1. */
-  minutes: Partial<Record<Pillar, number>>
+  minutes: Split
 }
 
 const midpoint = ([lo, hi]: readonly [number, number]): number => (lo + hi) / 2
@@ -88,7 +89,7 @@ function holdOrSetSeconds(item: TemplateItem, exercise: Exercise): number {
   return sets * (workSecOf(item, exercise) * sides + rest) + EXERCISE_SETUP_SEC
 }
 
-function protocolSeconds(p: IntervalProtocol): number {
+function protocolSeconds(p: Pick<IntervalProtocol, 'warmupSec' | 'rounds' | 'workSec' | 'restSec' | 'cooldownSec'>): number {
   return p.warmupSec + p.rounds * (p.workSec + p.restSec) + p.cooldownSec
 }
 
@@ -98,10 +99,10 @@ function protocolSeconds(p: IntervalProtocol): number {
     после остальных упражнений. */
 export function templateCoverage(
   template: Template,
-  library: Library,
-  protocols: readonly IntervalProtocol[] = [],
+  library: ExerciseLibrary,
+  protocols: ProtocolLibrary = [],
 ): TemplateCoverage {
-  const seconds: Partial<Record<Pillar, number>> = {}
+  const seconds: Split = {}
   const add = (pillar: Pillar, sec: number): void => {
     seconds[pillar] = (seconds[pillar] ?? 0) + sec
   }
@@ -115,7 +116,10 @@ export function templateCoverage(
       add('zone2', (item.minutes ?? exercise.defaults.minutes ?? 0) * 60)
     } else if (exercise.pillar === 'intervals') {
       const id = item.protocolId ?? exercise.defaults.protocolId
-      const protocol = protocols.find(p => p.id === id)
+      // у своего протокола значения в строке шаблона, а не в библиотеке
+      const protocol = id === CUSTOM_PROTOCOL_ID && item.customProtocol !== undefined
+        ? { ...item.customProtocol }
+        : protocols.find(p => p.id === id)
       if (protocol) add('intervals', protocolSeconds(protocol))
       else hasUnknownIntervals = true
     } else {
@@ -130,7 +134,7 @@ export function templateCoverage(
   }
 
   const pillars = PILLARS.filter(p => seconds[p] !== undefined)
-  const minutes: Partial<Record<Pillar, number>> = {}
+  const minutes: Split = {}
   for (const pillar of pillars) {
     minutes[pillar] = Math.max(1, Math.round((seconds[pillar] ?? 0) / 60))
   }

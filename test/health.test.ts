@@ -3,7 +3,7 @@ import {
   DEFAULT_SET_SEC, SEC_PER_REP, healthPayload, healthShareText, healthShortcutUrl, healthType,
   isDuplicateSend, itemSeconds, markConfirmed, markSent, sessionSeconds, toLocalISO,
 } from '../src/core/health.ts'
-import type { Exercise, IntervalProtocol, Session, SessionItem } from '../src/core/types.ts'
+import type { Exercise, ExerciseLibrary, IntervalProtocol, Session, SessionItem } from '../src/core/types.ts'
 
 const T0 = Date.UTC(2026, 9, 17, 14, 30, 0)   // 17 октября 2026, 14:30 UTC
 
@@ -13,7 +13,9 @@ function ex(id: string, pillar: Exercise['pillar']): Exercise {
     defaults: { sets: 1 }, technique: 'x',
   }
 }
-const LIB: Exercise[] = [ex('plank', 'mobility'), ex('stand', 'balance'), ex('pullup', 'strength')]
+const LIB: ExerciseLibrary = Object.fromEntries(
+  [ex('plank', 'mobility'), ex('stand', 'balance'), ex('pullup', 'strength')].map(e => [e.id, e]),
+)
 
 const PROTO: IntervalProtocol = {
   id: 'p', title: 'p', workSec: 30, restSec: 60, rounds: 4, warmupSec: 120, cooldownSec: 60, note: '', source: '',
@@ -79,14 +81,14 @@ group('преобладание и ничьи', () => {
   )
   assertEqual(
     healthType(session([{
-      id: 'e', exerciseId: 'e', type: 'external', activityId: 'tennis', activityTitle: 'Теннис',
+      id: 'e', type: 'external', activityId: 'tennis', activityTitle: 'Теннис',
       durationMin: 60, split: { zone2: 20, intervals: 40 },
     }]), LIB),
     'hiit', 'внешнее занятие делится по split',
   )
   assertEqual(
     healthType(session([{
-      id: 'e', exerciseId: 'e', type: 'external', activityId: 'hike', activityTitle: 'Поход',
+      id: 'e', type: 'external', activityId: 'hike', activityTitle: 'Поход',
       durationMin: 60, split: { zone2: 60 },
     }]), LIB),
     'cardio', 'внешнее кардио без вида',
@@ -104,19 +106,22 @@ group('пустая и мусорная сессия', () => {
   assert(!('distanceKm' in p) && !('energyKcal' in p), 'пустая: без необязательных полей')
   assertEqual(healthType(session([hold('plank', [0, -3])]), LIB), 'other', 'удержания без секунд')
   assertEqual(healthType(session([{
-    id: 'e', exerciseId: 'e', type: 'external', activityId: 'a', activityTitle: 'a', durationMin: 30, split: {},
+    id: 'e', type: 'external', activityId: 'a', activityTitle: 'a', durationMin: 30, split: {},
   }]), LIB), 'other', 'внешнее без разбивки')
 })
 
-group('библиотека: массив и словарь', () => {
-  const dict = Object.fromEntries(LIB.map(e => [e.id, e]))
-  assertEqual(healthType(session([hold('plank', [60])]), dict), 'flexibility', 'словарь')
-  assertEqual(healthType(session([hold('plank', [60])]), []), 'balance', 'пустая библиотека')
-  assertEqual(healthType(session([hold('constructor', [60])]), dict), 'balance', 'ключ прототипа не ломает поиск')
+group('библиотека: словарь по id', () => {
+  assertEqual(healthType(session([hold('plank', [60])]), LIB), 'flexibility', 'словарь')
+  assertEqual(healthType(session([hold('plank', [60])]), {}), 'balance', 'пустая библиотека')
+  assertEqual(healthType(session([hold('constructor', [60])]), LIB), 'balance', 'ключ прототипа не ломает поиск')
 })
 
 group('длительность', () => {
-  assertEqual(sessionSeconds(session([strength(3)], { endedAt: T0 + 45 * 60_000 })), 2700, 'по концу сессии')
+  // раздел 8: сумма элементов, даже если «Завершить» нажали через три часа
+  assertEqual(sessionSeconds(session([cardio('walk', 2700)], { endedAt: T0 + 3 * 3600_000 })), 2700, 'сумма элементов, а не время по часам')
+  assertEqual(sessionSeconds(session([strength(3)], { endedAt: T0 + 45 * 60_000 })), 3 * 10 * SEC_PER_REP + 2 * 60, 'сила: по подходам и отдыху')
+  assertEqual(sessionSeconds(session([strength(0)], { endedAt: T0 + 45 * 60_000 })), 2700, 'элементы пусты: запасной путь по часам')
+  assertEqual(sessionSeconds(session([strength(0)])), 0, 'пусто и без конца: ноль')
   assertEqual(sessionSeconds(session([cardio('walk', 1800)], { endedAt: T0 })), 1800, 'конец равен началу: сумма элементов')
   assertEqual(sessionSeconds(session([cardio('walk', 1800)], { endedAt: T0 - 5 })), 1800, 'конец раньше начала: сумма элементов')
   assertEqual(sessionSeconds(session([cardio('walk', 1800)])), 1800, 'идущая: сумма элементов')
@@ -136,7 +141,7 @@ group('длительность', () => {
   assertEqual(itemSeconds(iv(4)), 120 + 4 * 30 + 3 * 60 + 60, 'интервалы: разминка, раунды, заминка')
   assertEqual(itemSeconds(iv(0)), 0, 'интервалы без раундов')
   assertEqual(itemSeconds(iv(2.9)), 120 + 2 * 30 + 60 + 60, 'дробные раунды округляются вниз')
-  const e: SessionItem = { id: 'e', exerciseId: 'e', type: 'external', activityId: 'a', activityTitle: 'a', durationMin: 25, split: { zone2: 25 } }
+  const e: SessionItem = { id: 'e', type: 'external', activityId: 'a', activityTitle: 'a', durationMin: 25, split: { zone2: 25 } }
   assertEqual(itemSeconds(e), 1500, 'внешнее')
   assertEqual(healthPayload(session([cardio('walk', 1800)]), LIB, { tzOffsetMin: 0 }).durationSeconds, 1800, 'в полезной нагрузке')
 })
@@ -163,19 +168,20 @@ group('расстояние и калории', () => {
   assert(!('distanceKm' in healthPayload(session([cardio('walk', 1800, 0)]), LIB)), 'нулевое расстояние не передаётся')
   assert(!('distanceKm' in healthPayload(session([cardio('walk', 1800, NaN)]), LIB)), 'NaN расстояние не передаётся')
   assert(!('energyKcal' in healthPayload(walk, LIB)), 'калории не придумываются')
-  assertEqual(healthPayload(walk, LIB, { energyKcal: 250.4 }).energyKcal, 250, 'введённые калории')
-  assert(!('energyKcal' in healthPayload(walk, LIB, { energyKcal: 0 })), 'ноль калорий не передаётся')
-  assert(!('energyKcal' in healthPayload(walk, LIB, { energyKcal: -10 })), 'отрицательные не передаются')
-  assert(!('energyKcal' in healthPayload(walk, LIB, { energyKcal: NaN })), 'NaN не передаётся')
+  assertEqual(healthPayload({ ...walk, energyKcal: 250.4 }, LIB).energyKcal, 250, 'калории берутся из сессии')
+  assert(!('energyKcal' in healthPayload({ ...walk, energyKcal: 0 }, LIB)), 'ноль калорий не передаётся')
+  assert(!('energyKcal' in healthPayload({ ...walk, energyKcal: -10 }, LIB)), 'отрицательные не передаются')
+  assert(!('energyKcal' in healthPayload({ ...walk, energyKcal: NaN }, LIB)), 'NaN не передаётся')
 })
 
 group('текст для отправки', () => {
-  const payload = healthPayload(session([cardio('walk', 1800, 2)], { endedAt: T0 + 1_900_000 }), LIB, { tzOffsetMin: 240, energyKcal: 120 })
+  // конец на 1900 с позже начала, но длительность по разделу 8 - сумма элементов, 1800
+  const payload = healthPayload(session([cardio('walk', 1800, 2)], { endedAt: T0 + 1_900_000, energyKcal: 120 }), LIB, { tzOffsetMin: 240 })
   const text = healthShareText(payload)
   assertEqual(JSON.parse(text), payload, 'круг сериализации')
   assertEqual(
     text,
-    '{"type":"walking","startISO":"2026-10-17T18:30:00+04:00","durationSeconds":1900,"distanceKm":2,"energyKcal":120}',
+    '{"type":"walking","startISO":"2026-10-17T18:30:00+04:00","durationSeconds":1800,"distanceKm":2,"energyKcal":120}',
     'точный вид и порядок полей',
   )
   assert(!text.includes('\n'), 'одна строка')

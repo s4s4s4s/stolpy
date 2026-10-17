@@ -4,55 +4,45 @@
    RangeError с понятным текстом: экран такие значения не пропускает, поэтому
    исключение означает ошибку вызывающего кода, а не ввод человека.
 
-   Библиотека и протоколы приходят параметрами (ядро не читает src/data):
-   массив или словарь по id. */
+   Библиотека (словарь по id) и протоколы (список) приходят параметрами:
+   ядро не читает src/data. */
 
-import { validateSplit, type Split } from './external'
+import { validateSplit } from './external'
 import { makeId } from './ids'
 import { isDateISO, todayLocal } from './dates'
 import { roundKg } from './onerm'
 import { PILLARS } from './pillars'
+import { CUSTOM_PROTOCOL_LIMITS, LOAD_MAX_KG, REST_MAX_SEC, RIR_MAX, isMillis } from './limits'
 import type {
-  AppState, CardioItem, DateISO, Exercise, ExternalItem, HoldItem, IntervalItem, IntervalProtocol,
-  Millis, Pillar, PlannedSet, Place, ProgramRef, Session, SessionItem, Side, StrengthItem,
-  StrengthSet, Template, TemplateItem,
+  AppState, CardioItem, CustomProtocolParams, DateISO, Exercise, ExerciseLibrary, ExternalItem, HoldItem, IdFactory, IntervalItem,
+  IntervalProtocol, Millis, Pillar, PlannedSet, Place, ProgramRef, ProtocolLibrary, Session, SessionItem, Side,
+  Split, StrengthItem, StrengthSet, Template, TemplateItem,
 } from './types'
-
-/* Источник идентификаторов: префикс -> уникальный id. В приложении это
-   idFactory(Date.now()), в тестах - счётчик. */
-export type IdFactory = (prefix: string) => string
 
 export function idFactory(now: Millis, random: () => number = Math.random): IdFactory {
   return prefix => makeId(prefix, now, random)
 }
-
-export type ExerciseLibrary = readonly Exercise[] | Readonly<Record<string, Exercise>>
-export type ProtocolLibrary = readonly IntervalProtocol[] | Readonly<Record<string, IntervalProtocol>>
 
 /* Отдых по умолчанию между подходами, секунды, если шаблон его не задал. */
 export const DEFAULT_REST_SEC = 90
 /* Длительность удержания по умолчанию, если её нет ни в шаблоне, ни в упражнении. */
 export const DEFAULT_HOLD_SEC = 30
 export const CUSTOM_PROTOCOL_ID = 'custom'
-export const MAX_RIR = 5
+export const MAX_RIR = RIR_MAX
 const MS_PER_MIN = 60_000
 const MIN_AVG_HR = 30
 const MAX_PEAK_HR = 250
 
-/* Границы своего протокола (раздел 3.4 плана). */
-export const CUSTOM_PROTOCOL_LIMITS = {
-  workSec: [5, 600],
-  restSec: [0, 600],
-  rounds: [1, 30],
-  warmupSec: [0, 900],
-  cooldownSec: [0, 600],
-} as const
+export { CUSTOM_PROTOCOL_LIMITS }
 
 /* ---- справочники ---- */
 
-function indexById<T extends { id: string }>(source: readonly T[] | Readonly<Record<string, T>>): Map<string, T> {
-  const list: readonly T[] = Array.isArray(source) ? source : Object.values(source)
-  return new Map(list.map(entry => [entry.id, entry]))
+function exerciseIndex(library: ExerciseLibrary): Map<string, Exercise> {
+  return new Map(Object.entries(library))
+}
+
+function protocolIndex(protocols: ProtocolLibrary): Map<string, IntervalProtocol> {
+  return new Map(protocols.map(protocol => [protocol.id, protocol]))
 }
 
 function fail(message: string): never {
@@ -69,6 +59,24 @@ function isNonNegative(value: unknown): value is number {
 }
 function isNonNegativeInt(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+/* Время записи: конечное неотрицательное число миллисекунд (core/limits). */
+function requireMillis(value: number, what: string): void {
+  if (!isMillis(value)) fail(`${what}: неотрицательное число миллисекунд, получено ${value}`)
+}
+
+/* Вес снаряда или помощь: больше нуля и не больше LOAD_MAX_KG. */
+function requireLoad(value: number | undefined, what: string): void {
+  if (value !== undefined && !(isPositive(value) && value <= LOAD_MAX_KG)) {
+    fail(`${what}: число больше 0 и не больше ${LOAD_MAX_KG} кг, получено ${value}`)
+  }
+}
+
+/* Секунды хранятся целыми (core/limits): измеренное таймером значение
+   округляется здесь, а не выпадает при следующей загрузке. */
+function wholeSeconds(value: number): number {
+  return Math.round(value)
 }
 
 /* Копия без ключей со значением undefined: в JSON и сравнениях нет пустых полей. */
@@ -92,7 +100,7 @@ export interface NewSessionParams {
 
 /* Пустая идущая сессия. Дата - местная дата момента now. */
 export function newSession(params: NewSessionParams): Session {
-  if (!Number.isFinite(params.now)) fail(`Время начала тренировки: число, получено ${params.now}`)
+  requireMillis(params.now, 'Время начала тренировки')
   return compact<Session>({
     id: params.ids('sess'),
     date: todayLocal(new Date(params.now)),
@@ -122,8 +130,15 @@ function requirePositiveInt(value: number | undefined, what: string, exerciseId:
   return value
 }
 
-function findProtocol(protocols: Map<string, IntervalProtocol>, id: string | undefined, exerciseId: string): IntervalProtocol {
+function findProtocol(
+  protocols: Map<string, IntervalProtocol>,
+  id: string | undefined,
+  exerciseId: string,
+  custom?: CustomProtocolParams,
+): IntervalProtocol {
   if (id === undefined) fail(`Для интервального упражнения «${exerciseId}» не задан протокол`)
+  // свой протокол из шаблона: значения сохранены в строке шаблона
+  if (id === CUSTOM_PROTOCOL_ID && custom !== undefined) return customProtocol(custom)
   const protocol = protocols.get(id)
   if (!protocol) fail(`Протокол «${id}» упражнения «${exerciseId}» не найден`)
   return { ...protocol }
@@ -140,7 +155,7 @@ function buildItem(
   const base = { id, exerciseId: exercise.id, ...(note ? { note } : {}) }
 
   if (exercise.pillar === 'intervals') {
-    const protocol = findProtocol(protocols, spec.protocolId ?? exercise.defaults.protocolId, exercise.id)
+    const protocol = findProtocol(protocols, spec.protocolId ?? exercise.defaults.protocolId, exercise.id, spec.customProtocol)
     return { ...base, type: 'intervals', mode: exercise.cardioMode ?? 'other', protocol, roundsDone: 0 }
   }
   if (exercise.pillar === 'zone2' || exercise.input === 'distance-time') {
@@ -186,12 +201,12 @@ export function itemFromExercise(
   ids: IdFactory,
   spec: Partial<TemplateItem> = {},
 ): SessionItem {
-  return buildItem(exercise, indexById(protocols), ids, spec)
+  return buildItem(exercise, protocolIndex(protocols), ids, spec)
 }
 
 /* Какие упражнения шаблона уже не найти в библиотеке (например, удалено свое). */
 export function missingExerciseIds(template: Template, library: ExerciseLibrary): string[] {
-  const known = indexById(library)
+  const known = exerciseIndex(library)
   return template.items.filter(item => !known.has(item.exerciseId)).map(item => item.exerciseId)
 }
 
@@ -206,8 +221,8 @@ export function sessionFromTemplate(
   ids: IdFactory,
   place?: Place,
 ): Session {
-  const exercises = indexById(library)
-  const protocolIndex = indexById(protocols)
+  const exercises = exerciseIndex(library)
+  const protocolsById = protocolIndex(protocols)
   const base = newSession({
     place: place ?? (template.place === 'any' ? 'home' : template.place),
     title: template.title,
@@ -219,7 +234,7 @@ export function sessionFromTemplate(
   const items: SessionItem[] = []
   for (const spec of template.items) {
     const exercise = exercises.get(spec.exerciseId)
-    if (exercise) items.push(buildItem(exercise, protocolIndex, ids, spec))
+    if (exercise) items.push(buildItem(exercise, protocolsById, ids, spec))
   }
   return { ...base, items }
 }
@@ -277,6 +292,17 @@ export function setSessionNote(session: Session, note: string | undefined): Sess
   return text ? { ...rest, note: text } : rest
 }
 
+/* Калории, введённые руками. Положительное конечное число сохраняется
+   округлённым до целых; undefined, ноль и отрицательные поле снимают.
+   Нечисловое значение - ошибка вызывающего кода (RangeError). */
+export function setSessionEnergy(session: Session, kcal: number | undefined): Session {
+  const { energyKcal: _old, ...rest } = session
+  if (kcal === undefined) return rest
+  if (typeof kcal !== 'number' || Number.isNaN(kcal)) fail(`Калории: число, получено ${String(kcal)}`)
+  const rounded = Math.round(kcal)
+  return Number.isFinite(rounded) && rounded > 0 ? { ...rest, energyKcal: rounded } : rest
+}
+
 /* ---- силовые подходы ---- */
 
 export type StrengthSetInput = Omit<StrengthSet, 'doneAt'>
@@ -285,8 +311,8 @@ function checkedSet(input: StrengthSetInput, doneAt: Millis): StrengthSet {
   if (input.kind !== 'warmup' && input.kind !== 'work' && input.kind !== 'failure') {
     fail(`Вид подхода: warmup, work или failure, получено ${String(input.kind)}`)
   }
-  if (input.weightKg !== undefined && !isPositive(input.weightKg)) fail(`Вес подхода: положительное число, получено ${input.weightKg}`)
-  if (input.assistKg !== undefined && !isPositive(input.assistKg)) fail(`Помощь в подходе: положительное число, получено ${input.assistKg}`)
+  requireLoad(input.weightKg, 'Вес подхода')
+  requireLoad(input.assistKg, 'Помощь в подходе')
   if (input.reps !== undefined && !isNonNegativeInt(input.reps)) fail(`Повторы: целое число не меньше 0, получено ${input.reps}`)
   if (input.seconds !== undefined && !isNonNegative(input.seconds)) fail(`Секунды: число не меньше 0, получено ${input.seconds}`)
   if (input.reps === undefined && input.seconds === undefined) fail('В подходе нет ни повторов, ни секунд')
@@ -294,8 +320,9 @@ function checkedSet(input: StrengthSetInput, doneAt: Millis): StrengthSet {
     fail(`RIR: целое от 0 до ${MAX_RIR}, получено ${input.rir}`)
   }
   if (input.side !== undefined && input.side !== 'left' && input.side !== 'right') fail(`Сторона: left или right, получено ${String(input.side)}`)
-  if (!Number.isFinite(doneAt)) fail(`Время подхода: число, получено ${doneAt}`)
-  return compact<StrengthSet>({ ...input, doneAt })
+  requireMillis(doneAt, 'Время подхода')
+  const seconds = input.seconds === undefined ? undefined : wholeSeconds(input.seconds)
+  return compact<StrengthSet>({ ...input, seconds, doneAt })
 }
 
 /* Записывает подход в силовой элемент; запланированные строки не меняются. */
@@ -326,11 +353,14 @@ export function removeSet(session: Session, itemId: string, setIndex: number): S
   return replaceItem(session, index, { ...item, sets: item.sets.filter((_, i) => i !== setIndex) })
 }
 
-/* Смена отдыха элемента (кнопки ±15 с на RestBar сохраняются на упражнение). */
+/* Смена отдыха элемента (кнопки ±15 с на RestBar сохраняются на упражнение).
+   Отдых от 0 до REST_MAX_SEC, хранится в целых секундах. */
 export function setRestSec(session: Session, itemId: string, restSec: number): Session {
   const { index, item } = requireType(session, itemId, 'strength')
-  if (!isNonNegative(restSec)) fail(`Отдых: число секунд не меньше 0, получено ${restSec}`)
-  return replaceItem(session, index, { ...item, restSec })
+  if (!(isNonNegative(restSec) && restSec <= REST_MAX_SEC)) {
+    fail(`Отдых: от 0 до ${REST_MAX_SEC} секунд, получено ${restSec}`)
+  }
+  return replaceItem(session, index, { ...item, restSec: wholeSeconds(restSec) })
 }
 
 /* ---- удержания ---- */
@@ -339,12 +369,14 @@ export interface HoldInput { seconds: number; side?: Side; eyesClosed?: boolean 
 
 export function logHold(session: Session, itemId: string, input: HoldInput, now: Millis): Session {
   const { index, item } = requireType(session, itemId, 'hold')
-  if (!isPositive(input.seconds)) fail(`Удержание: положительное число секунд, получено ${input.seconds}`)
+  if (!isPositive(input.seconds) || wholeSeconds(input.seconds) < 1) {
+    fail(`Удержание: от одной секунды, получено ${input.seconds}`)
+  }
   if (item.perSide && input.side === undefined) fail('Удержание на сторону записывается со стороной')
   if (input.side !== undefined && input.side !== 'left' && input.side !== 'right') fail(`Сторона: left или right, получено ${String(input.side)}`)
-  if (!Number.isFinite(now)) fail(`Время удержания: число, получено ${now}`)
+  requireMillis(now, 'Время удержания')
   const hold = compact({
-    seconds: input.seconds,
+    seconds: wholeSeconds(input.seconds),
     side: item.perSide ? input.side : undefined,
     eyesClosed: input.eyesClosed ? true : undefined,
     doneAt: now,
@@ -362,10 +394,14 @@ export function removeHold(session: Session, itemId: string, holdIndex: number):
 
 export type CardioPatch = Partial<Pick<CardioItem, 'mode' | 'durationSec' | 'distanceKm' | 'avgHr' | 'talkTest'>>
 
-function checkedHr(value: number | undefined, what: string): void {
-  if (value !== undefined && !(Number.isFinite(value) && value >= MIN_AVG_HR && value <= MAX_PEAK_HR)) {
+/* Пульс: от MIN_AVG_HR до MAX_PEAK_HR (внутри пределов хранения core/limits),
+   хранится целым ударом в минуту. */
+function checkedHr(value: number | undefined, what: string): number | undefined {
+  if (value === undefined) return undefined
+  if (!(Number.isFinite(value) && value >= MIN_AVG_HR && value <= MAX_PEAK_HR)) {
     fail(`${what}: от ${MIN_AVG_HR} до ${MAX_PEAK_HR}, получено ${value}`)
   }
+  return Math.round(value)
 }
 
 /* Правка кардио-элемента. undefined стирает необязательное поле. */
@@ -373,8 +409,10 @@ export function updateCardio(session: Session, itemId: string, patch: CardioPatc
   const { index, item } = requireType(session, itemId, 'cardio')
   if (patch.durationSec !== undefined && !isNonNegative(patch.durationSec)) fail(`Длительность: секунды не меньше 0, получено ${patch.durationSec}`)
   if (patch.distanceKm !== undefined && !isPositive(patch.distanceKm)) fail(`Дистанция: положительное число, получено ${patch.distanceKm}`)
-  checkedHr(patch.avgHr, 'Средний пульс')
-  const next = compact<CardioItem>({ ...item, ...patch })
+  const normalized: CardioPatch = { ...patch }
+  if ('avgHr' in patch) normalized.avgHr = checkedHr(patch.avgHr, 'Средний пульс')
+  if (patch.durationSec !== undefined) normalized.durationSec = wholeSeconds(patch.durationSec)
+  const next = compact<CardioItem>({ ...item, ...normalized })
   return replaceItem(session, index, next)
 }
 
@@ -382,13 +420,7 @@ export function updateCardio(session: Session, itemId: string, patch: CardioPatc
 
 export type IntervalsPatch = Partial<Pick<IntervalItem, 'mode' | 'protocol' | 'roundsDone' | 'peakHr'>>
 
-export interface CustomProtocolParams {
-  workSec: number
-  restSec: number
-  rounds: number
-  warmupSec: number
-  cooldownSec: number
-}
+export type { CustomProtocolParams }
 
 function checkCustomLimits(p: CustomProtocolParams): void {
   for (const key of Object.keys(CUSTOM_PROTOCOL_LIMITS) as (keyof CustomProtocolParams)[]) {
@@ -397,6 +429,19 @@ function checkCustomLimits(p: CustomProtocolParams): void {
     if (!Number.isInteger(value) || value < min || value > max) {
       fail(`Свой протокол, ${key}: целое от ${min} до ${max}, получено ${String(value)}`)
     }
+  }
+}
+
+/* Снимок протокола целиком: целые секунды и раунды, строки подписи. Тот же
+   вид требует разбор сохранённого (sanitizeIntervalProtocol). */
+function checkProtocolSnapshot(p: IntervalProtocol): void {
+  const positive = (v: number) => Number.isSafeInteger(v) && v > 0
+  const nonNegative = (v: number) => Number.isSafeInteger(v) && v >= 0
+  if (typeof p.id !== 'string' || p.id.trim() === '' || typeof p.title !== 'string' ||
+      typeof p.note !== 'string' || typeof p.source !== 'string' ||
+      !positive(p.workSec) || !nonNegative(p.restSec) || !positive(p.rounds) ||
+      !nonNegative(p.warmupSec) || !nonNegative(p.cooldownSec)) {
+    fail(`Протокол «${String(p.id)}»: работа и раунды целые больше 0, отдых, разминка и заминка целые от 0, подписи строками`)
   }
 }
 
@@ -422,12 +467,13 @@ export function customProtocol(params: CustomProtocolParams): IntervalProtocol {
 export function updateIntervals(session: Session, itemId: string, patch: IntervalsPatch): Session {
   const { index, item } = requireType(session, itemId, 'intervals')
   if (patch.protocol?.id === CUSTOM_PROTOCOL_ID) checkCustomLimits(patch.protocol)
+  if (patch.protocol) checkProtocolSnapshot(patch.protocol)
   const next = compact<IntervalItem>({ ...item, ...patch, ...(patch.protocol ? { protocol: { ...patch.protocol } } : {}) })
   if (!isNonNegativeInt(next.roundsDone) || next.roundsDone > next.protocol.rounds) {
     fail(`Раунды: целое от 0 до ${next.protocol.rounds}, получено ${String(next.roundsDone)}`)
   }
-  checkedHr(next.peakHr, 'Пиковый пульс')
-  return replaceItem(session, index, next)
+  const peakHr = checkedHr(next.peakHr, 'Пиковый пульс')
+  return replaceItem(session, index, compact<IntervalItem>({ ...next, peakHr }))
 }
 
 /* ---- завершение ---- */
@@ -458,7 +504,7 @@ export interface FinishOptions {
    убираются, заметка сохраняется. Уже завершённая сессия возвращается как есть. */
 export function finishSession(session: Session, now: Millis, options: FinishOptions = {}): Session {
   if (session.endedAt !== undefined) return { ...session }
-  if (!Number.isFinite(now)) fail(`Время окончания: число, получено ${now}`)
+  requireMillis(now, 'Время окончания')
   const pruned = options.pruneEmpty === false ? session.items : session.items.filter(item => !isItemEmpty(item))
   const closed: Session = { ...session, items: pruned, endedAt: Math.max(now, session.startedAt) }
   return options.note !== undefined ? setSessionNote(closed, options.note) : closed
@@ -489,12 +535,13 @@ function emptyByPillar(): Record<Pillar, PillarStat> {
 }
 
 export function sessionSummary(session: Session, library: ExerciseLibrary, now: Millis): SessionSummary {
-  const exercises = indexById(library)
+  const exercises = exerciseIndex(library)
   const byPillar = emptyByPillar()
   let sets = 0
   let tonnage = 0
   for (const item of session.items) {
-    const pillarOf = (fallback: Pillar): Pillar => exercises.get(item.exerciseId)?.pillar ?? fallback
+    const pillarOf = (fallback: Pillar): Pillar =>
+      (item.type === 'external' ? undefined : exercises.get(item.exerciseId)?.pillar) ?? fallback
     switch (item.type) {
       case 'strength': {
         const stat = byPillar[pillarOf('strength')]
@@ -617,11 +664,23 @@ function templateItemFromHold(item: HoldItem): TemplateItem | null {
   return spec
 }
 
+/* Интервалы: id протокола, а у своего протокола ещё и его значения, иначе
+   шаблон открыл бы стартовые значения своего протокола из библиотеки. */
+function templateItemFromIntervals(item: IntervalItem): TemplateItem {
+  const p = item.protocol
+  if (p.id !== CUSTOM_PROTOCOL_ID) return { exerciseId: item.exerciseId, protocolId: p.id }
+  return {
+    exerciseId: item.exerciseId,
+    protocolId: p.id,
+    customProtocol: { workSec: p.workSec, restSec: p.restSec, rounds: p.rounds, warmupSec: p.warmupSec, cooldownSec: p.cooldownSec },
+  }
+}
+
 /* Шаблон из тренировки (раздел 3.3 плана): упражнения в порядке сессии, число
    подходов и диапазон повторов из фактических подходов (разминки не входят),
    удержания и кардио по факту. Внешние занятия и элементы без сделанной
-   работы пропускаются. Свой интервальный протокол сохраняется как id
-   'custom' (значения не переносятся). Нечего сохранять - null. */
+   работы пропускаются. Свой интервальный протокол сохраняется с id 'custom'
+   и своими значениями (customProtocol). Нечего сохранять - null. */
 export function saveAsTemplate(
   session: Session,
   library: ExerciseLibrary,
@@ -629,7 +688,7 @@ export function saveAsTemplate(
   now: Millis,
   ids: IdFactory,
 ): Template | null {
-  const exercises = indexById(library)
+  const exercises = exerciseIndex(library)
   const items: TemplateItem[] = []
   const pillars = new Set<Pillar>()
   for (const item of session.items) {
@@ -648,13 +707,11 @@ export function saveAsTemplate(
         fallbackPillar = 'zone2'
         break
       case 'intervals':
-        if (item.roundsDone > 0) spec = { exerciseId: item.exerciseId, protocolId: item.protocol.id }
+        if (item.roundsDone > 0) spec = templateItemFromIntervals(item)
         fallbackPillar = 'intervals'
         break
-      case 'external':
-        break
     }
-    if (!spec) continue
+    if (!spec || item.type === 'external') continue
     items.push(spec)
     pillars.add(exercises.get(item.exerciseId)?.pillar ?? fallbackPillar)
   }
@@ -696,7 +753,8 @@ export function externalSession(input: ExternalSessionInput, now: Millis, ids: I
   if (input.rpe !== undefined && !(Number.isInteger(input.rpe) && input.rpe >= 1 && input.rpe <= 10)) {
     fail(`RPE: целое от 1 до 10, получено ${input.rpe}`)
   }
-  if (!Number.isFinite(now)) fail(`Время записи: число, получено ${now}`)
+  requireMillis(now, 'Время записи')
+  if (now - input.durationMin * MS_PER_MIN < 0) fail(`Время записи ${now} раньше начала занятия длиной ${input.durationMin} мин`)
   const split: Split = {}
   for (const pillar of PILLARS) {
     const minutes = input.split[pillar]
@@ -705,7 +763,6 @@ export function externalSession(input: ExternalSessionInput, now: Millis, ids: I
   const item: ExternalItem = compact<ExternalItem>({
     id: ids('item'),
     type: 'external',
-    exerciseId: input.activityId,
     activityId: input.activityId,
     activityTitle: input.activityTitle,
     durationMin: input.durationMin,

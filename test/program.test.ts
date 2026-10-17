@@ -407,8 +407,18 @@ group('advancePhase и чек-лист выхода', () => {
   assertEqual(dayKeyFor(next, phaseFor(P, next)), 'A', 'новая фаза начинается с A')
   const after = completeProgramDay(next, { date: addDays(START, 20), dayKey: 'A', sessionId: 'new1' })
   assertEqual(dayKeyFor(after, phaseFor(P, after)), 'B', 'после первого дня новой фазы - B')
-  const sameDay = completeProgramDay(next, { date: '2026-10-30', dayKey: 'A', sessionId: 'old' })
-  assertEqual(dayKeyFor(sameDay, phaseFor(P, sameDay)), 'A', 'день подтверждения относится к старой фазе')
+  // День подтверждения: что сделано до перехода - старая фаза, после - новая.
+  const doneAfterConfirm = completeProgramDay(next, { date: '2026-10-30', dayKey: 'A', sessionId: 'same-after' })
+  assertEqual(doneAfterConfirm.completedDays.at(-1)?.phaseIndex, 1, 'день запоминает фазу выполнения')
+  assertEqual(dayKeyFor(doneAfterConfirm, phaseFor(P, doneAfterConfirm)), 'B', 'A после подтверждения в тот же день - дальше B')
+  const doneBeforeConfirm = advancePhase(
+    P, completeProgramDay(p, { date: '2026-10-30', dayKey: 'C', sessionId: 'same-before' }), today, new Date(2026, 9, 30, 18, 0).getTime(),
+  )
+  assertEqual(dayKeyFor(doneBeforeConfirm, phaseFor(P, doneBeforeConfirm)), 'A', 'день до подтверждения в тот же день - старой фазе')
+  // Запись без phaseIndex (сохранена до появления поля) относится к фазе по дате.
+  const legacy = (date: string) => ({ ...next, completedDays: [...next.completedDays, { date, dayKey: 'A', sessionId: `legacy-${date}` }] })
+  assertEqual(dayKeyFor(legacy('2026-10-30'), phaseFor(P, next)), 'A', 'старая запись в день подтверждения - старой фазе')
+  assertEqual(dayKeyFor(legacy('2026-10-31'), phaseFor(P, next)), 'B', 'старая запись после дня подтверждения - новой фазе')
 
   // Цепочка до последней фазы.
   let q = fresh()

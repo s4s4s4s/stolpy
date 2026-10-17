@@ -116,42 +116,53 @@ ${FAMILIES.map(f => `${f.name}: ${f.copyright}`).join('\n')}
 
 ${OFL_BODY}`
 
+/**
+ * @param {string} url
+ * @param {Record<string, string>} headers
+ * @returns {Promise<string>}
+ */
 async function fetchText(url, headers) {
   const res = await fetch(url, { headers })
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
   return res.text()
 }
 
+/** @param {string} url */
 async function fetchBinary(url) {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
   return Buffer.from(await res.arrayBuffer())
 }
 
-/** Разбирает ответ CSS API на блоки @font-face вместе с комментарием-подмножеством. */
+/**
+ * Разбирает ответ CSS API на блоки @font-face вместе с комментарием-подмножеством.
+ * @param {string} css
+ * @param {string} family
+ * @returns {{ family: string, subset: string, weight: number, url: string, range: string }[]}
+ */
 function parseFaces(css, family) {
   const faces = []
   const re = /\/\*\s*([\w-]+)\s*\*\/\s*@font-face\s*\{([^}]*)\}/g
   for (const m of css.matchAll(re)) {
     const body = m[2]
+    /** @param {RegExp} rx */
     const pick = rx => body.match(rx)?.[1]
-    const face = {
-      family,
-      subset: m[1],
-      weight: Number(pick(/font-weight:\s*(\d+)/)),
-      url: pick(/url\((https:[^)]+\.woff2)\)/),
-      range: pick(/unicode-range:\s*([^;]+);/)
-    }
-    if (!face.url || !face.range || !Number.isFinite(face.weight)) {
+    const weight = Number(pick(/font-weight:\s*(\d+)/))
+    const url = pick(/url\((https:[^)]+\.woff2)\)/)
+    const range = pick(/unicode-range:\s*([^;]+);/)
+    if (!url || !range || !Number.isFinite(weight)) {
       throw new Error(`Не разобран блок @font-face (${family}, ${m[1]}):\n${body}`)
     }
+    const face = { family, subset: m[1], weight, url, range }
     faces.push(face)
   }
   return faces
 }
 
+/** @param {string} name */
 const slug = name => name.replace(/\s+/g, '')
 
+/** @param {{ name: string, weights: number[] }} family */
 async function loadFamily({ name, weights }) {
   const query = `family=${name.replace(/ /g, '+')}:wght@${weights.join(';')}&display=swap`
   const css = await fetchText(`https://fonts.googleapis.com/css2?${query}`, { 'User-Agent': USER_AGENT })
@@ -168,6 +179,7 @@ async function loadFamily({ name, weights }) {
 
 /** Один и тот же файл у нескольких начертаний - вариативный шрифт: пишем его
     один раз, а в CSS даём диапазон весов. */
+/** @param {Awaited<ReturnType<typeof loadFamily>>} faces */
 function groupByFile(faces) {
   const byUrl = new Map()
   for (const f of faces) {

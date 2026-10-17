@@ -1,7 +1,8 @@
 import { assert, assertEqual, finish, group } from './_harness.ts'
 import {
-  DAY_MIN_MINUTES, DEFAULT_WEEK_GOALS, WEEK_MINIMUMS, dayLoad, isWorkingSet, mobilityByZone, pillarDeficit,
-  pillarProgress, strengthDays, weekHistory, weekProgress, workingSetsByGroup,
+  DAY_MIN_MINUTES, DEFAULT_WEEK_GOALS, SECONDS_PER_REP, WEEK_MINIMUMS, dayLoad, externalStrengthMinutes, externalStrengthText,
+  isSecondaryRequired, isWorkingSet, mobilityByZone, pillarDeficit, pillarProgress, strengthDays, weekHistory,
+  weekProgress, workingSetsByGroup,
 } from '../src/core/week.ts'
 import type { AppState, Exercise, Pillar, WeeklyGoals } from '../src/core/types.ts'
 import {
@@ -9,6 +10,7 @@ import {
   baseState, cardio, external, hold, intervals, session, stateOf, strength, warmup, work,
 } from './_week-fixtures.ts'
 
+const PILLARS_GATED = (['strength', 'zone2', 'intervals', 'mobility', 'balance'] as const).filter(isSecondaryRequired)
 const week = (state: AppState, start = MON) => weekProgress(state, start, undefined, LIBRARY)
 const one = (state: AppState, pillar: Pillar) => week(state).pillars[pillar]
 
@@ -181,7 +183,7 @@ group('зона 2: минуты кардио плюс внешние минут�
   assertEqual(p.detail, '2 тренировки', 'две сессии с зоной 2')
 
   const frac = stateOf(session(MON, [cardio(10.4)]), session(TUE, [cardio(10.4)]))
-  assertEqual(one(frac, 'zone2').value, 21, '10.4 + 10.4 = 20.8 -> 21, а не 10 + 10')
+  assertEqual(one(frac, 'zone2').value, 20, '10.4 + 10.4 = 20.8 -> 20: сумма точная, показ вниз')
   const below = stateOf(session(MON, [{ ...cardio(0), durationSec: 149.4 * 60 }]))
   assertEqual(one(below, 'zone2').done, false, '149.4 -> 149 ниже цели')
 })
@@ -238,7 +240,7 @@ group('мобильность: удержания, внешние минуты, 
     session(TUE, [hold('cat-cow', [300]), external(20, { mobility: 10 })]),          // 15 мин
   )
   const p = one(state, 'mobility')
-  assertEqual(p.value, 20, '4,5 + 15 = 19,5 -> 20')
+  assertEqual(p.value, 19, '4,5 + 15 = 19,5 -> 19, показ вниз')
   assertEqual(p.secondary, { value: 1, target: 3 }, 'день один: понедельник 4,5 мин ниже порога')
   assertEqual(p.done, false, 'минуты 20 из 30 и дней 1 из 3')
   assertEqual(p.detail, 'дней: 1 из 3', 'подпись')
@@ -253,14 +255,16 @@ group('мобильность: ровно пять минут - день, 4:59 -
   assertEqual(one(twoSessions, 'mobility').secondary?.value, 1, 'две сессии за день складываются')
 })
 
-group('мобильность: выполнена при 30 минутах и трёх днях; минимум 10', () => {
+group('мобильность: выполнена при 30 минутах, дни справочные (раздел 4.4); минимум 10', () => {
   const d = (date: string) => session(date, [hold('stretch-hip', [600])])
   const full = stateOf(d(MON), d(WED), d(FRI))
   assertEqual(one(full, 'mobility').done, true, '30 минут за три дня')
   const oneDay = stateOf(session(MON, [hold('stretch-hip', [1800])]))
   const p = one(oneDay, 'mobility')
   assertEqual(p.value, 30, '30 минут за один день')
-  assertEqual(p.done, false, 'дней мало')
+  assertEqual(p.secondary, { value: 1, target: 3 }, 'дни показываются')
+  assertEqual(p.done, true, 'одного дня хватает: дни в условие не входят')
+  assertEqual(week(oneDay).pillars.mobility.done && !week(oneDay).allDone, true, 'остальные столпы пусты, неделя не закрыта')
   assertEqual(p.reachedMinimum, true, 'минимум есть')
   assertEqual(one(stateOf(session(MON, [hold('stretch-hip', [540])])), 'mobility').reachedMinimum, false, '9 минут')
 })
@@ -284,6 +288,40 @@ group('мобильность записана подходами: считаю�
   assertEqual(w.pillars.strength.value, 0, 'силе ничего')
 })
 
+group('мобильность и баланс с вводом повторов: оценка SECONDS_PER_REP секунд на повтор', () => {
+  const reps = (n: number, kind: 'work' | 'warmup' = 'work') => ({ kind, reps: n, doneAt: 1 })
+  // 3 подхода по 10 повторов: 30 * 4 = 120 с = 2 минуты; разминка не в счёт
+  const mob = stateOf(session(MON, [strength('wgs-reps', 0, [reps(10, 'warmup'), reps(10), reps(10), reps(10)])]))
+  assertEqual(one(mob, 'mobility').value, (30 * SECONDS_PER_REP) / 60, 'подходы reps-only дают минуты мобильности')
+  assertEqual(mobilityByZone(mob, MON, LIBRARY).hips, 2, 'и минуты зоны')
+  assertEqual(one(mob, 'strength').value, 0, 'силе ничего')
+  const bal = stateOf(session(MON, [strength('bird-reps', 0, [reps(15), reps(15)])]))
+  assertEqual(one(bal, 'balance').value, 2, '30 повторов = 2 минуты баланса')
+  assertEqual(one(bal, 'balance').detail, 'дней: 0 из 3', 'оценка по повторам не выдаётся за стойку')
+  // реальные секунды важнее оценки, если указаны
+  const both = stateOf(session(MON, [strength('bird-reps', 0, [{ kind: 'work', reps: 10, seconds: 60, doneAt: 1 }])]))
+  assertEqual(one(both, 'balance').value, 1, 'секунды подхода, а не повторы')
+  assertEqual(one(both, 'balance').detail, 'дней: 0 из 3, лучшая стойка 60 с', 'лучшая стойка по секундам')
+})
+
+group('минутные столпы: сравнение с целью по точному значению, округление только для показа', () => {
+  const near = (min: number) => min * 60
+  const z = stateOf(session(MON, [{ ...cardio(0), durationSec: near(149.5) }]))
+  const pz = one(z, 'zone2')
+  assertEqual(pz.value, 149, 'для показа вниз: шкала не рисует цель, которой нет')
+  assertEqual(pz.done, false, '149.5 при цели 150 не выполнено')
+  assert(pz.ratio < 1, 'доля меньше единицы')
+  assertEqual(one(stateOf(session(MON, [{ ...cardio(0), durationSec: near(89.5) }])), 'zone2').reachedMinimum, false, '89.5 при минимуме 90')
+  assertEqual(one(stateOf(session(MON, [{ ...cardio(0), durationSec: near(150) }])), 'zone2').done, true, 'ровно 150 выполнено')
+  const m = stateOf(session(MON, [hold('stretch-hip', [29.5 * 60])]))
+  assertEqual(one(m, 'mobility').done, false, 'мобильность 29.5 из 30')
+  assertEqual(one(m, 'mobility').value, 29, 'показ 29')
+  const b = stateOf(session(MON, [hold('sls', [29.5 * 60])]))
+  assertEqual(one(b, 'balance').done, false, 'баланс 29.5 из 30')
+  assertEqual(one(stateOf(session(MON, [hold('sls', [9.5 * 60])])), 'balance').reachedMinimum, false, 'баланс 9.5 при минимуме 10')
+  assertEqual(one(stateOf(session(MON, [hold('stretch-hip', [9.5 * 60])])), 'mobility').reachedMinimum, false, 'мобильность 9.5 при минимуме 10')
+})
+
 group('баланс: минуты, дни, лучшая стойка, внешние минуты', () => {
   const state = stateOf(
     session(MON, [hold('sls', [30, 45, 30, 30])]),                           // 2,25 мин
@@ -296,6 +334,61 @@ group('баланс: минуты, дни, лучшая стойка, внешн
   assertEqual(p.reachedMinimum, true, 'минимум 10')
   assertEqual(p.done, false, 'не выполнен')
   assertEqual(one(baseState(), 'balance').detail, 'дней: 0 из 3', 'пустая неделя: без стойки')
+  const oneDay = one(stateOf(session(MON, [hold('sls', [1800])])), 'balance')
+  assertEqual([oneDay.value, oneDay.secondary?.value, oneDay.done], [30, 1, true], '30 минут за один день: выполнен (раздел 4.5)')
+})
+
+group('сила: внешние минуты split.strength - отдельная строка, в шкалу не идут (раздел 3.7)', () => {
+  const state = stateOf(
+    session(MON, [external(60, { mobility: 30, balance: 15, strength: 15 })]),     // пилатес
+    session(WED, [external(60, { strength: 40, mobility: 20 })]),                 // скалолазание
+    session(NEXT_MON, [external(60, { strength: 40, mobility: 20 })]),            // другая неделя
+  )
+  assertEqual(externalStrengthMinutes(state, MON), 55, '15 + 40 за неделю')
+  assertEqual(externalStrengthMinutes(state, WED), 55, 'любая дата недели')
+  assertEqual(externalStrengthMinutes(baseState(), MON), 0, 'пусто')
+  assertEqual(one(state, 'strength').value, 0, 'подходов от внешних минут нет')
+  assertEqual(externalStrengthText(55), 'ещё 55 минут силовой работы вне приложения', 'строка плана')
+  assertEqual(externalStrengthText(1), 'ещё 1 минута силовой работы вне приложения', 'одна минута')
+  assertEqual(externalStrengthText(22), 'ещё 22 минуты силовой работы вне приложения', 'две-четыре')
+  assertEqual(externalStrengthText(0), null, 'без минут строки нет')
+  assertEqual(externalStrengthText(Number.NaN), null, 'мусор - без строки')
+})
+
+group('зона 2: доля сессий, где средний пульс попал в зону', () => {
+  const state = stateOf(
+    session(MON, [cardio(40, 'z2-bike', 120)]),
+    session(TUE, [cardio(40, 'z2-bike', 150)]),
+    session(WED, [cardio(40, 'z2-bike', 100)]),
+    session(THU, [cardio(40)]),
+  )
+  const detail = (settings?: Parameters<typeof weekProgress>[2], s: AppState = state) =>
+    weekProgress(s, MON, settings, LIBRARY).pillars.zone2.detail
+  const manual = { goals: DEFAULT_WEEK_GOALS, maxHrMode: 'manual', maxHrManual: 190, birthYear: null, restingHr: null } as const
+  // максимум 190: зона 2 это 114-133
+  assertEqual(detail(manual), '4 тренировки, пульс в зоне 2: 1 из 3', 'в зоне одна из трёх с пульсом, без пульса не считается')
+  assertEqual(detail({ goals: DEFAULT_WEEK_GOALS }), '4 тренировки', 'без возраста и максимума доли нет')
+  assertEqual(detail(undefined), '4 тренировки', 'настройки по умолчанию без возраста: доли нет')
+  // возраст 20 лет на неделе 2026-10-12: максимум 194, зона 116-136
+  const byAge = { goals: DEFAULT_WEEK_GOALS, birthYear: 2006, maxHrMode: 'formula', maxHrManual: null } as const
+  assertEqual(detail(byAge), '4 тренировки, пульс в зоне 2: 1 из 3', 'максимум по формуле Танаки')
+  // пульс покоя 60 (Карвонен): 60 + 130 * 0,6..0,7 = 138-151, пульс 150 внутри, 120 ниже
+  const carvonen = { ...manual, restingHr: 60 }
+  assertEqual(detail(carvonen), '4 тренировки, пульс в зоне 2: 1 из 3', 'зона по Карвонену')
+  const highOnly = stateOf(session(MON, [cardio(40, 'z2-bike', 150)]))
+  assertEqual(detail(carvonen, highOnly), '1 тренировка, пульс в зоне 2: 1 из 1', 'при Карвонене 150 в зоне')
+  assertEqual(detail(manual, highOnly), '1 тренировка, пульс в зоне 2: 0 из 1', 'при зоне 114-133 пульс 150 выше')
+  // чуть выше зоны (до +5) в зону не засчитывается
+  assertEqual(detail(manual, stateOf(session(MON, [cardio(40, 'z2-bike', 135)]))), '1 тренировка, пульс в зоне 2: 0 из 1', 'чуть выше зоны не в зоне')
+  // две записи одной сессии: средний взвешенный по длительности, одна сессия
+  const twoItems = stateOf(session(MON, [cardio(30, 'z2-bike', 120), cardio(10, 'z2-bike', 160)]))
+  assertEqual(detail(manual, twoItems), '1 тренировка, пульс в зоне 2: 1 из 1', 'взвешенный средний 130 в зоне')
+  // мусорный пульс игнорируется
+  assertEqual(detail(manual, stateOf(session(MON, [cardio(30, 'z2-bike', Number.NaN)]))), '1 тренировка', 'NaN как нет пульса')
+  // история недель использует те же настройки
+  const h = weekHistory(state, MON, 1, manual, LIBRARY)
+  assertEqual(h[0].pillars.zone2.detail, '4 тренировки, пульс в зоне 2: 1 из 3', 'weekHistory')
+  assertEqual(week(state).pillars.zone2.value, 160, 'минуты от пульса не зависят')
 })
 
 group('цели из настроек и защита от мусора', () => {
@@ -360,10 +453,14 @@ group('weekHistory: порядок, длина, неделя через гран
   assertEqual(ny.map(w => w.weekStart), ['2026-12-21', '2026-12-28'], 'неделя 28 дек - 3 янв')
 })
 
-group('pillarDeficit: нехватка учитывает дни у силы, мобильности и баланса, но не у интервалов', () => {
+group('pillarDeficit: нехватка учитывает дни только у силы', () => {
+  assertEqual(PILLARS_GATED, ['strength'], 'дни обязательны только у силы')
   assertEqual(pillarDeficit(one(baseState(), 'zone2')), 1, 'пусто - полная нехватка')
-  const state = stateOf(session(MON, [hold('stretch-hip', [1800])]))
-  assertEqual(pillarDeficit(one(state, 'mobility')), 2 / 3, 'минуты есть, дней 1 из 3')
+  const state = stateOf(session(MON, [hold('stretch-hip', [1800])]), session(MON, [hold('sls', [1800])]))
+  assertEqual(pillarDeficit(one(state, 'mobility')), 0, 'мобильность: минуты есть, дней 1 из 3 - нехватки нет')
+  assertEqual(pillarDeficit(one(state, 'balance')), 0, 'баланс: так же')
+  const strong = stateOf(session(MON, [strength('squat', 25), strength('row', 25)]))
+  assertEqual(pillarDeficit(one(strong, 'strength')), 2 / 3, 'сила: подходы есть, дней 1 из 3')
   const hardOnly = stateOf(session(MON, [intervals(2)]), session(TUE, [intervals(2)]))
   assertEqual(pillarDeficit(one(hardOnly, 'intervals')), 0, 'интервалы: тяжёлые минуты не нужны')
 })

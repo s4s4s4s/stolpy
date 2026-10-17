@@ -4,10 +4,9 @@ import {
   RESTING_HR_TEST_ID, ageBand, ageFromBirthYear, applyRestingHr, bandIndex, daysUntilDue, dueStatus,
   evaluateTest, latestResult, nextDue, normsForAge, sideGap, testSeries,
 } from '../src/core/formtests.ts'
-import type { FormBand, FormTestDef } from '../src/core/formtests.ts'
-import type { Settings, TestResult } from '../src/core/types.ts'
+import type { FormTest, NormBand, Settings, TestResult } from '../src/core/types.ts'
 
-const T = (id: string): FormTestDef => {
+const T = (id: string): FormTest => {
   const t = FORM_TESTS_BY_ID[id]
   assert(t, `нет теста ${id}`)
   return t
@@ -326,7 +325,7 @@ group('оценка: мусор на входе и возраст неизвес
     { ok: false, reason: 'missing-field', field: 'reps' },
     'undefined как отсутствие',
   )
-  const noEmpty: FormTestDef = { ...T('pushups'), fields: [] }
+  const noEmpty: FormTest = { ...T('pushups'), fields: [] }
   assertEqual(evaluateTest(noEmpty, {}, 20), { ok: false, reason: 'missing-field' }, 'тест без полей')
 
   /* Возраст неизвестен: результат есть, полосы нет, у возрастно-независимых тестов полоса есть. */
@@ -428,7 +427,7 @@ group('flag встречается только там, где задан', () =
   const flagged: string[] = []
   for (const t of FORM_TESTS) {
     for (const table of t.norms) {
-      table.bands.forEach((b: FormBand) => { if (b.flag) flagged.push(`${t.id}:${b.label}`) })
+      table.bands.forEach((b: NormBand) => { if (b.flag) flagged.push(`${t.id}:${b.label}`) })
     }
   }
   assertEqual(flagged, ['waist-height:высокое', 'resting-hr:высокий'], 'красные точки')

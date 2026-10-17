@@ -1,9 +1,8 @@
-import type { AppState, DateISO } from './types'
+import type { AppState, DateISO, ExerciseLibrary, GoalsSource } from './types'
 import { PILLARS } from './types'
 import { addDays, weekStartOf } from './dates'
 import { weeksWord } from './plural'
 import { countedSessions, weekProgress } from './week'
-import type { ExerciseLibrary, GoalsSource } from './week'
 
 /* Серия недель (раздел 4.6 плана): считаем назад от прошлой недели, пока все
    пять столпов выполнены. Текущая неделя прибавляется, если уже выполнена

@@ -1,16 +1,13 @@
 import { PILLARS } from './pillars'
 import { makeId } from './ids'
 import type {
-  CardioMode, Equipment, Exercise, ExerciseDefaults, InputKind, MobilityZone, MuscleGroup,
+  CardioMode, Equipment, Exercise, ExerciseDefaults, ExerciseLibrary, InputKind, MobilityZone, MuscleGroup,
   Millis, Pillar, Place, Settings,
 } from './types'
 
 /* Библиотека упражнений: слияние встроенных со своими, фильтры по месту и
    инвентарю, создание своего упражнения. Ядро не импортирует src/data:
    встроенный список приходит параметром (раздел 0, решение 3 плана). */
-
-/** Библиотека по id. Прототипа у объекта нет, поэтому id вроде 'constructor' не ловится случайно. */
-export type Library = Readonly<Record<string, Exercise>>
 
 /* Полный перечень инвентаря. Record делает список исчерпывающим на этапе
    сборки: новый вариант Equipment без записи здесь не соберётся. */
@@ -40,7 +37,7 @@ export function isEquipment(value: unknown): value is Equipment {
 export function buildLibrary(
   builtin: readonly Exercise[],
   custom: Readonly<Record<string, Exercise>> = {},
-): Library {
+): ExerciseLibrary {
   const library: Record<string, Exercise> = Object.create(null)
   for (const exercise of builtin) library[exercise.id] = exercise
   for (const exercise of Object.values(custom)) {
@@ -50,7 +47,7 @@ export function buildLibrary(
 }
 
 /** Упражнения библиотеки списком, в порядке вставки. */
-export function libraryList(library: Library): Exercise[] {
+export function libraryList(library: ExerciseLibrary): Exercise[] {
   return Object.values(library)
 }
 
@@ -86,7 +83,7 @@ function fold(text: string): string {
   return text.toLowerCase().replaceAll('ё', 'е')
 }
 
-export function filterLibrary(library: Library, filter: LibraryFilter = {}): Exercise[] {
+export function filterLibrary(library: ExerciseLibrary, filter: LibraryFilter = {}): Exercise[] {
   const available =
     filter.equipment ??
     (filter.place === 'gym' ? GYM_EQUIPMENT : filter.place === 'outside' ? OUTSIDE_EQUIPMENT : undefined)

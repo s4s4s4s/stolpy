@@ -4,7 +4,8 @@ import { FakeDriver, FakeLocalStorage, assert, assertEqual, finish, group, withF
 import type { ActiveSession, AppState, StorageDriver } from '../src/core/types.ts'
 import { defaultState, serialize, serializeActive } from '../src/state/storage.ts'
 import {
-  KEYS, asideBackupKey, createSaver, loadAll, persistStorage, storageEstimate, type SaveResult,
+  KEYS, asideBackupKey, createSaver, listBackups, loadAll, migratedKey, openStorage, parseBackupKey, persistStorage,
+  readBackupText, storageEstimate, wipeAll, type SaveKey, type SaveResult,
 } from '../src/state/store.ts'
 import {
   IDB_NAME, IDB_STORE, IDB_VERSION, LOCAL_PREFIX, browserEnv, idbDriver, localDriver, memoryDriver, openIdb,
@@ -14,6 +15,8 @@ import {
 const NOW = Date.UTC(2026, 9, 17, 9, 0)
 const FIXTURE_TEXT = readFileSync(join(process.cwd(), 'test', 'fixtures', 'state-v1.json'), 'utf8')
 const fixture = (): AppState => JSON.parse(FIXTURE_TEXT) as AppState
+/** Точка отсчёта сейвера на пустом носителе. */
+const NOTHING_STORED: Record<SaveKey, string | null> = { state: null, active: null }
 
 function activeOf(state: AppState): ActiveSession {
   const session = JSON.parse(JSON.stringify(state.sessions['s-cardio']))
@@ -46,6 +49,9 @@ class GatedDriver implements StorageDriver {
   }
   remove(key: string): Promise<void> {
     return this.gate(key, null)
+  }
+  async keys(prefix = ''): Promise<string[]> {
+    return [...this.data.keys()].filter(k => k.startsWith(prefix)).sort()
   }
   private gate(key: string, value: string | null): Promise<void> {
     this.writes.push({ key, value })
@@ -170,7 +176,7 @@ await group('loadAll: более новая версия блокирует за
   assertEqual(d.data.get(KEYS.state), newer, 'текст не тронут')
 
   const results: SaveResult[] = []
-  const saver = createSaver(d, x => results.push(x), { block: r.saveBlock })
+  const saver = createSaver(d, x => results.push(x), { stored: r.stored, block: r.saveBlock })
   const s1 = await saver.saveState(defaultState(NOW))
   const s2 = await saver.saveActive(null)
   assertEqual([s1.ok, s2.ok], [false, false], 'обе записи отклонены')
@@ -229,7 +235,7 @@ await group('loadAll: копию не удалось записать - запи
 await group('createSaver: одна запись в полёте на ключ, поздняя замещает ожидающую', async () => {
   const d = new GatedDriver()
   const results: SaveResult[] = []
-  const saver = createSaver(d, x => results.push(x))
+  const saver = createSaver(d, x => results.push(x), { stored: NOTHING_STORED })
   const s = (n: number): AppState => ({ ...defaultState(NOW), meta: { ...defaultState(NOW).meta, sessionsSinceBackup: n } })
 
   const p1 = saver.saveState(s(1))
@@ -252,7 +258,7 @@ await group('createSaver: одна запись в полёте на ключ, �
 
 await group('createSaver: ключи независимы, null снимает черновик', async () => {
   const d = new GatedDriver()
-  const saver = createSaver(d, () => {})
+  const saver = createSaver(d, () => {}, { stored: NOTHING_STORED })
   const a = activeOf(fixture())
   void saver.saveState(fixture())
   void saver.saveActive(a)
@@ -271,7 +277,7 @@ await group('createSaver: ключи независимы, null снимает �
 
 await group('createSaver: текст снимается в момент вызова', async () => {
   const d = new FakeDriver()
-  const saver = createSaver(d, () => {})
+  const saver = createSaver(d, () => {}, { stored: NOTHING_STORED })
   const st = defaultState(NOW)
   const p = saver.saveState(st)
   st.settings.defaultRestSec = 5
@@ -282,7 +288,7 @@ await group('createSaver: текст снимается в момент вызо
 await group('createSaver: ошибка записи даёт SaveResult с ошибкой, очередь продолжает работу', async () => {
   const d = new FakeDriver()
   const results: SaveResult[] = []
-  const saver = createSaver(d, x => results.push(x))
+  const saver = createSaver(d, x => results.push(x), { stored: NOTHING_STORED })
   d.failWrites = true
   const r = await saver.saveState(defaultState(NOW))
   assert(!r.ok, 'не ок')
@@ -295,7 +301,7 @@ await group('createSaver: ошибка записи даёт SaveResult с ош�
 
 await group('createSaver: переполнение квоты распознаётся', async () => {
   const d = new GatedDriver()
-  const saver = createSaver(d, () => {})
+  const saver = createSaver(d, () => {}, { stored: NOTHING_STORED })
   const quota = new Error('full')
   quota.name = 'QuotaExceededError'
   d.failNext = quota
@@ -313,7 +319,7 @@ await group('createSaver: исключение в onResult не останавл
   const saver = createSaver(d, () => {
     calls++
     throw new Error('обработчик упал')
-  })
+  }, { stored: NOTHING_STORED })
   const original = process.listeners('uncaughtException')
   process.removeAllListeners('uncaughtException')
   process.on('uncaughtException', err => errors.push(err))
@@ -332,7 +338,7 @@ await group('createSaver: исключение в onResult не останавл
 
 await group('createSaver: блокировка одного ключа не трогает другой', async () => {
   const d = new FakeDriver()
-  const saver = createSaver(d, () => {}, { block: { active: 'read-failed' } })
+  const saver = createSaver(d, () => {}, { stored: NOTHING_STORED, block: { active: 'read-failed' } })
   assertEqual(saver.block, { state: null, active: 'read-failed' }, 'block виден')
   const r = await saver.saveActive(null)
   assert(!r.ok && r.reason === 'blocked' && r.error.length > 0, 'черновик заблокирован с текстом')
@@ -343,12 +349,157 @@ await group('createSaver + loadAll: после копии битого запи�
   const d = new FakeDriver()
   d.data.set(KEYS.state, 'мусор')
   const loaded = await loadAll(d, NOW)
-  const saver = createSaver(d, () => {}, { block: loaded.saveBlock })
+  const saver = createSaver(d, () => {}, { stored: loaded.stored, block: loaded.saveBlock })
   await saver.saveState(fixture())
   const again = await loadAll(d, NOW + 1)
   assertEqual([again.state.source, again.state.dropped], ['stored', 0], 'читается сохранённое')
   assertEqual(again.state.state, fixture(), 'то самое')
   assertEqual(d.data.get(KEYS.stateBackup), 'мусор', 'копия осталась')
+})
+
+/* ---- commitFinished: черновик снимается только после записанного состояния ---- */
+
+/** Состояние с завершённой тренировкой черновика. */
+function finishedStateOf(active: ActiveSession): AppState {
+  const st = fixture()
+  st.sessions[active.session.id] = { ...active.session, endedAt: NOW }
+  return st
+}
+
+await group('commitFinished: снятие черновика не уходит, пока пишется состояние', async () => {
+  const d = new GatedDriver()
+  const a = activeOf(fixture())
+  const draftText = serializeActive(a)
+  d.data.set(KEYS.active, draftText)
+  const saver = createSaver(d, () => {}, { stored: { state: null, active: draftText } })
+  const finished = finishedStateOf(a)
+
+  const p = saver.commitFinished(finished)
+  await tick()
+  assertEqual(d.writes, [{ key: 'state', value: serialize(finished) }], 'в полёте только состояние')
+  await d.release()
+  assertEqual(d.writes.at(-1), { key: 'active', value: null }, 'после записи состояния - снятие черновика')
+  await d.release()
+  const r = await p
+  assertEqual(r, { ok: true, state: { ok: true, key: 'state' }, active: { ok: true, key: 'active' } }, 'итог ок')
+  assertEqual(d.data.get(KEYS.state), serialize(finished), 'состояние с тренировкой на носителе')
+  assert(!d.data.has(KEYS.active), 'черновик снят')
+})
+
+await group('commitFinished: запись состояния упала - черновик остаётся на носителе', async () => {
+  const d = new GatedDriver()
+  const a = activeOf(fixture())
+  const draftText = serializeActive(a)
+  d.data.set(KEYS.active, draftText)
+  const results: SaveResult[] = []
+  const saver = createSaver(d, x => results.push(x), { stored: { state: null, active: draftText } })
+  const quota = new Error('full')
+  quota.name = 'QuotaExceededError'
+  d.failNext = quota
+
+  const p = saver.commitFinished(finishedStateOf(a))
+  await tick()
+  await d.release()
+  const r = await p
+  assert(!r.ok && !r.state.ok && r.state.reason === 'quota', 'отказ состояния по квоте')
+  assertEqual(r.active, null, 'до снятия черновика очередь не дошла')
+  await saver.flush()
+  assertEqual(d.writes.map(w => w.key), ['state'], 'remove черновика не уходил')
+  assertEqual(d.data.get(KEYS.active), draftText, 'черновик цел: тренировку можно завершить снова')
+  assert(!d.data.has(KEYS.state), 'состояния нет')
+  assertEqual(results.map(x => x.key), ['state'], 'onResult получил только отказ состояния')
+
+  const again = saver.commitFinished(finishedStateOf(a))
+  await tick()
+  await d.release()
+  await d.release()
+  assertEqual((await again).ok, true, 'повтор после сбоя проходит')
+  assert(!d.data.has(KEYS.active), 'черновик снят после записанного состояния')
+})
+
+await group('commitFinished: запись состояния выключена - черновик не трогается', async () => {
+  const d = new FakeDriver()
+  const a = activeOf(fixture())
+  const draftText = serializeActive(a)
+  d.data.set(KEYS.active, draftText)
+  const saver = createSaver(d, () => {}, { stored: { state: null, active: draftText }, block: { state: 'read-failed' } })
+  const r = await saver.commitFinished(finishedStateOf(a))
+  assert(!r.ok && !r.state.ok && r.state.reason === 'blocked', 'состояние заблокировано')
+  assertEqual(r.active, null, 'черновик не снимался')
+  assertEqual(d.data.get(KEYS.active), draftText, 'черновик цел')
+})
+
+/* ---- конфликт с другой вкладкой ---- */
+
+await group('createSaver: другая вкладка записала новее - отказ conflict, носитель не перетёрт, после rebase запись проходит', async () => {
+  const d = new FakeDriver()
+  d.data.set(KEYS.state, FIXTURE_TEXT)
+  const loadedA = await loadAll(d, NOW)
+  const loadedB = await loadAll(d, NOW)
+  assertEqual(loadedA.stored, { state: FIXTURE_TEXT, active: null }, 'точка отсчёта - дословный текст носителя')
+  const resultsA: SaveResult[] = []
+  const tabA = createSaver(d, x => resultsA.push(x), { stored: loadedA.stored, block: loadedA.saveBlock })
+  const tabB = createSaver(d, () => {}, { stored: loadedB.stored, block: loadedB.saveBlock })
+
+  const fromB = fixture()
+  fromB.bodyWeights = [...fromB.bodyWeights, { date: '2026-10-17', kg: 79.9 }]
+  assertEqual(await tabB.saveState(fromB), { ok: true, key: 'state' }, 'вкладка B записала')
+  const textB = serialize(fromB)
+
+  const fromA = fixture()
+  fromA.settings = { ...fromA.settings, defaultRestSec: fromA.settings.defaultRestSec + 15 }
+  assert(serialize(fromA) !== FIXTURE_TEXT, 'правка A меняет текст')
+  const r = await tabA.saveState(fromA)
+  assert(!r.ok && r.reason === 'conflict', 'вкладка A получила conflict')
+  assert(!r.ok && r.reason === 'conflict' && r.storedText === textB && r.error.length > 0, 'в отказе текст носителя и строка для экрана')
+  assertEqual(d.data.get(KEYS.state), textB, 'запись B не перетёрта')
+  assertEqual(resultsA, [r], 'onResult получил конфликт')
+
+  const r2 = await tabA.saveState(fromA)
+  assert(!r2.ok && r2.reason === 'conflict', 'без rebase ключ остаётся в конфликте')
+  assertEqual(d.data.get(KEYS.state), textB, 'и носитель по-прежнему цел')
+
+  const mergedA: AppState = { ...fromB, settings: fromA.settings }
+  tabA.rebase('state', textB)
+  assertEqual(await tabA.saveState(mergedA), { ok: true, key: 'state' }, 'после rebase запись проходит')
+  assertEqual(d.data.get(KEYS.state), serialize(mergedA), 'на носителе слитое')
+  const r3 = await tabB.saveState(fromB)
+  assert(!r3.ok && r3.reason === 'conflict', 'теперь отстала вкладка B')
+})
+
+await group('createSaver: черновик снят другой вкладкой - запись черновика и commitFinished отказывают conflict', async () => {
+  const d = new FakeDriver()
+  const a = activeOf(fixture())
+  const draftText = serializeActive(a)
+  d.data.set(KEYS.state, FIXTURE_TEXT)
+  d.data.set(KEYS.active, draftText)
+  const loaded = await loadAll(d, NOW)
+  const tab = createSaver(d, () => {}, { stored: loaded.stored, block: loaded.saveBlock })
+  // другая вкладка завершила эту тренировку: состояние новое, черновика нет
+  const otherFinished = serialize(finishedStateOf(a))
+  d.data.set(KEYS.state, otherFinished)
+  d.data.delete(KEYS.active)
+
+  const draft = await tab.saveActive({ ...a, currentItemId: 'c2' })
+  assert(!draft.ok && draft.reason === 'conflict' && draft.storedText === null, 'черновик не воскрешён поверх снятого')
+  assert(!d.data.has(KEYS.active), 'черновика на носителе нет')
+
+  const r = await tab.commitFinished(finishedStateOf(a))
+  assert(!r.ok && !r.state.ok && r.state.reason === 'conflict', 'состояние другой вкладки не перетёрто')
+  assertEqual(r.active, null, 'черновик не снимался')
+  assertEqual(d.data.get(KEYS.state), otherFinished, 'носитель цел')
+})
+
+await group('createSaver: сбой чтения перед записью - отказ failed, носитель не тронут', async () => {
+  const d = new ReadFailDriver()
+  d.data.set(KEYS.state, FIXTURE_TEXT)
+  const saver = createSaver(d, () => {}, { stored: { state: FIXTURE_TEXT, active: null } })
+  d.failReads.add(KEYS.state)
+  const r = await saver.saveState(defaultState(NOW))
+  assert(!r.ok && r.reason === 'failed' && r.error.includes('чтение state не удалось'), 'причина failed с текстом')
+  assertEqual(d.data.get(KEYS.state), FIXTURE_TEXT, 'текст не тронут')
+  d.failReads.delete(KEYS.state)
+  assertEqual(await saver.saveState(defaultState(NOW)), { ok: true, key: 'state' }, 'после восстановления чтения запись проходит')
 })
 
 /* ---- persistStorage, storageEstimate ---- */
@@ -386,6 +537,11 @@ async function driverContract(driver: StorageDriver, label: string): Promise<voi
   await driver.remove('state')
   assertEqual(await driver.get('state'), null, `${label}: удалено`)
   await driver.remove('нет-такого')
+  await driver.set('state.backup', 'b')
+  await driver.set('migrated.5.state', 'm')
+  assertEqual(await driver.keys(), ['active', 'migrated.5.state', 'state.backup'], `${label}: keys по возрастанию`)
+  assertEqual(await driver.keys('state'), ['state.backup'], `${label}: keys с префиксом`)
+  assertEqual(await driver.keys('нет'), [], `${label}: keys без совпадений`)
 }
 
 await group('memoryDriver и localDriver: контракт StorageDriver', async () => {
@@ -398,6 +554,9 @@ await group('memoryDriver и localDriver: контракт StorageDriver', async
   assertEqual(ls.getItem(`${LOCAL_PREFIX}state`), 'v', 'ключ с префиксом stolpy:')
   assertEqual(ls.getItem('state'), null, 'без префикса не пишет')
   assertEqual(local.name, 'local', 'имя')
+  ls.setItem('чужое', '1')
+  ls.setItem('other:state', '1')
+  assertEqual(await local.keys(), ['active', 'migrated.5.state', 'state', 'state.backup'], 'keys localStorage: только свои, без префикса')
 })
 
 await group('localDriver: исключение Storage уходит отказом промиса', async () => {
@@ -414,7 +573,7 @@ await group('localDriver: исключение Storage уходит отказо
     caught = err
   }
   assert(caught instanceof Error && caught.name === 'QuotaExceededError', 'ошибка проброшена')
-  const saver = createSaver(localDriver(ls), () => {})
+  const saver = createSaver(localDriver(ls), () => {}, { stored: NOTHING_STORED })
   const r = await saver.saveState(defaultState(NOW))
   assert(!r.ok && r.reason === 'quota', 'saver распознал квоту через localDriver')
 })
@@ -458,6 +617,7 @@ function fakeIdb(mode: 'ok' | 'error' | 'blocked' | 'throw') {
           get: (k: string) => req(() => data.get(k)),
           put: (v: unknown, k: string) => req(() => { data.set(k, v); return k }),
           delete: (k: string) => req(() => { data.delete(k); return undefined }),
+          getAllKeys: () => req(() => [...data.keys()]),
         }),
         ...tx,
         set oncomplete(f: Handler) { tx.oncomplete = f },
@@ -584,6 +744,416 @@ await group('browserEnv и pickDriver по умолчанию в node', async ()
     const d = await pickDriver()
     assertEqual(d.name, 'local', 'выбран localStorage')
   })
+})
+
+/* ---- сверка с запасным носителем ---- */
+
+/** Состояние запасного режима: своя тренировка, вес и настройки. */
+function strayStateOf(): AppState {
+  const st = defaultState(NOW - 86_400_000)
+  const session = JSON.parse(JSON.stringify(fixture().sessions['s-cardio']))
+  session.id = 's-local'
+  st.sessions['s-local'] = session
+  st.bodyWeights = [{ date: '2026-10-16', kg: 80.5 }]
+  st.settings = { ...st.settings, defaultRestSec: 150 }
+  return st
+}
+
+function activeStartedAt(state: AppState, startedAt: number, itemId: string): ActiveSession {
+  const a = activeOf(state)
+  a.session.startedAt = startedAt
+  a.currentItemId = itemId
+  return a
+}
+
+function strayLocal(state: AppState | null, active: ActiveSession | null): { ls: FakeLocalStorage; stray: StorageDriver } {
+  const ls = new FakeLocalStorage()
+  if (state) ls.setItem(`${LOCAL_PREFIX}state`, serialize(state))
+  if (active) ls.setItem(`${LOCAL_PREFIX}active`, serializeActive(active))
+  return { ls, stray: localDriver(ls) }
+}
+
+function snapshot(ls: FakeLocalStorage): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (let i = 0; i < ls.length; i++) {
+    const k = ls.key(i)!
+    out[k] = ls.getItem(k)!
+  }
+  return out
+}
+
+await group('сверка: состояние и черновик запасного режима переносятся, ключи переименованы', async () => {
+  const primary = new FakeDriver('idb')
+  primary.data.set(KEYS.state, FIXTURE_TEXT)
+  const strayState = strayStateOf()
+  const strayActive = activeStartedAt(fixture(), NOW - 600_000, 'c1')
+  const { ls, stray } = strayLocal(strayState, strayActive)
+  const stateText = ls.getItem(`${LOCAL_PREFIX}state`)
+  const activeText = ls.getItem(`${LOCAL_PREFIX}active`)
+
+  const r = await loadAll(primary, NOW, { stray, fallbacks: [] })
+  assertEqual(r.stray.status, 'done', 'сверка завершена')
+  assertEqual(r.stray.moved, 2, 'перенесены тренировка и вес')
+  assertEqual(r.stray.draftMoved, true, 'черновик перенесён')
+  assertEqual(r.stray.counts?.sessions, { added: 1, kept: 0, replaced: 0 }, 'счётчик тренировок')
+  assertEqual(r.stray.keys.map(k => [k.key, k.result, k.renamedTo]), [
+    ['state', 'merged', `migrated.${NOW}.state`],
+    ['active', 'merged', `migrated.${NOW}.active`],
+  ], 'отчёт по ключам')
+  assert(r.stray.message !== null && r.stray.message.includes('2 записи и черновик тренировки'), `строка для экрана: ${r.stray.message}`)
+
+  const fx = fixture()
+  const stored = JSON.parse(primary.data.get(KEYS.state)!) as AppState
+  assertEqual(Object.keys(stored.sessions).sort(), [...Object.keys(fx.sessions), 's-local'].sort(), 'в основном все тренировки обоих')
+  assertEqual(stored.settings, fx.settings, 'настройки основного остались')
+  assertEqual(r.state.state, stored, 'загруженное совпадает с записанным')
+  assertEqual(r.state.source, 'stored', 'источник stored')
+  assertEqual(primary.data.get(KEYS.active), serializeActive(strayActive), 'черновик записан в основной')
+  assertEqual(r.active, { active: strayActive, source: 'stored', dropped: 0 }, 'загруженный черновик')
+  assertEqual(r.backups, [], 'вытеснять было нечего')
+  assertEqual(r.stored, { state: primary.data.get(KEYS.state), active: primary.data.get(KEYS.active) }, 'точка отсчёта - тексты после сверки')
+
+  assertEqual(ls.getItem(`${LOCAL_PREFIX}state`), null, 'state в localStorage снят')
+  assertEqual(ls.getItem(`${LOCAL_PREFIX}active`), null, 'active в localStorage снят')
+  assertEqual(ls.getItem(`${LOCAL_PREFIX}migrated.${NOW}.state`), stateText, 'текст состояния дословно под migrated')
+  assertEqual(ls.getItem(`${LOCAL_PREFIX}migrated.${NOW}.active`), activeText, 'текст черновика дословно под migrated')
+  assertEqual(r.storage, { driver: 'idb', fallbacks: [], notice: null }, 'носитель IndexedDB без полосы')
+
+  const primaryBefore = new Map(primary.data)
+  const lsBefore = snapshot(ls)
+  const again = await loadAll(primary, NOW + 1000, { stray, fallbacks: [] })
+  assertEqual(again.stray.status, 'none', 'повторная загрузка: сверять нечего')
+  assertEqual(again.stray.keys.map(k => k.result), ['absent', 'absent'], 'ключей нет')
+  assertEqual(again.stray.message, null, 'строки нет')
+  assertEqual(new Map(primary.data), primaryBefore, 'основной носитель не тронут')
+  assertEqual(snapshot(ls), lsBefore, 'localStorage не тронут')
+  assertEqual(Object.keys(again.state.state.sessions).length, Object.keys(fx.sessions).length + 1, 'тренировки не задвоены')
+})
+
+await group('сверка: отказ записи слитого состояния не трогает localStorage', async () => {
+  const primary = new FakeDriver('idb')
+  primary.data.set(KEYS.state, FIXTURE_TEXT)
+  const strayState = strayStateOf()
+  const { ls, stray } = strayLocal(strayState, activeStartedAt(fixture(), NOW - 600_000, 'c1'))
+  const lsBefore = snapshot(ls)
+  primary.failWrites = true
+  const r = await loadAll(primary, NOW, { stray })
+  assertEqual(r.stray.status, 'incomplete', 'сверка не закончена')
+  assertEqual(r.stray.keys.map(k => [k.key, k.result, k.problem, k.renamedTo]), [
+    ['state', 'not-merged', 'write-failed', null],
+    ['active', 'not-merged', 'state-pending', null],
+  ], 'причины по ключам')
+  assert(typeof r.stray.keys[0].error === 'string', 'текст ошибки записи')
+  assertEqual(snapshot(ls), lsBefore, 'localStorage дословно прежний')
+  assertEqual(r.state.state, fixture(), 'в работе прежнее основное состояние')
+  assertEqual(r.active.active, null, 'черновик не подставлен')
+  assertEqual(r.stray.moved, 0, 'ничего не перенесено')
+  assert(r.stray.message !== null && r.stray.message.includes('Перенос повторится'), 'строка о повторе')
+  assertEqual(primary.data.get(KEYS.state), FIXTURE_TEXT, 'основное не изменилось')
+
+  primary.failWrites = false
+  const retry = await loadAll(primary, NOW + 1, { stray })
+  assertEqual([retry.stray.status, retry.stray.moved, retry.stray.draftMoved], ['done', 2, true], 'следующая загрузка переносит всё')
+})
+
+await group('сверка: черновик запасного свежее - основной уходит в active.backup', async () => {
+  const primary = new FakeDriver('idb')
+  primary.data.set(KEYS.state, FIXTURE_TEXT)
+  const older = activeStartedAt(fixture(), NOW - 3_600_000, 'c1')
+  const olderText = serializeActive(older)
+  primary.data.set(KEYS.active, olderText)
+  const newer = activeStartedAt(fixture(), NOW - 600_000, 'c1')
+  const { ls, stray } = strayLocal(null, newer)
+  const r = await loadAll(primary, NOW, { stray })
+  assertEqual(r.stray.status, 'done', 'готово')
+  assertEqual(r.stray.keys.map(k => k.result), ['absent', 'merged'], 'состояния не было, черновик перенесён')
+  assertEqual(primary.data.get(KEYS.activeBackup), olderText, 'вытесненный черновик дословно в копии')
+  assertEqual(r.backups, [{ from: 'active', status: 'written', key: KEYS.activeBackup }], 'о копии сказано')
+  assertEqual(r.active.active, newer, 'в работе свежий черновик')
+  assertEqual(primary.data.get(KEYS.active), serializeActive(newer), 'и он записан')
+  assertEqual(ls.getItem(`${LOCAL_PREFIX}migrated.${NOW}.active`), serializeActive(newer), 'запасной переименован')
+  assertEqual(r.stray.moved, 0, 'записей состояния не переносилось')
+  assert(r.stray.message !== null && r.stray.message.includes('черновик тренировки'), 'строка про черновик')
+})
+
+await group('сверка: черновик основного свежее или одновременный - остаётся, запасной в копии', async () => {
+  for (const delta of [0, 60_000]) {
+    const primary = new FakeDriver('idb')
+    primary.data.set(KEYS.state, FIXTURE_TEXT)
+    const current = activeStartedAt(fixture(), NOW - 600_000 + delta, 'c1')
+    primary.data.set(KEYS.active, serializeActive(current))
+    const strayActive = activeStartedAt(fixture(), NOW - 600_000, 'c1')
+    const strayText = serializeActive(strayActive)
+    const { ls, stray } = strayLocal(null, strayActive)
+    const r = await loadAll(primary, NOW, { stray })
+    assertEqual(r.stray.keys[1].result, 'kept-current', `основной остался (delta ${delta})`)
+    assertEqual(r.active.active, current, 'в работе черновик основного')
+    assertEqual(primary.data.get(KEYS.active), serializeActive(current), 'основной не переписан')
+    assertEqual(primary.data.has(KEYS.activeBackup), false, 'копию основного не делали')
+    assertEqual(ls.getItem(`${LOCAL_PREFIX}active`), null, 'запасной снят')
+    assertEqual(ls.getItem(`${LOCAL_PREFIX}migrated.${NOW}.active`), strayText, 'и лежит копией')
+    assertEqual([r.stray.status, r.stray.draftMoved], ['done', false], 'итог')
+  }
+})
+
+await group('сверка: копию вытесняемого черновика не записать - черновики не трогаются', async () => {
+  const primary = new FakeDriver('idb')
+  primary.data.set(KEYS.state, FIXTURE_TEXT)
+  const older = activeStartedAt(fixture(), NOW - 3_600_000, 'c1')
+  primary.data.set(KEYS.active, serializeActive(older))
+  const { ls, stray } = strayLocal(null, activeStartedAt(fixture(), NOW - 600_000, 'c1'))
+  const lsBefore = snapshot(ls)
+  primary.failWrites = true
+  const r = await loadAll(primary, NOW, { stray })
+  assertEqual([r.stray.keys[1].result, r.stray.keys[1].problem], ['not-merged', 'backup-failed'], 'причина')
+  assertEqual(r.active.active, older, 'в работе прежний черновик')
+  assertEqual(snapshot(ls), lsBefore, 'localStorage прежний')
+  assertEqual(r.stray.status, 'incomplete', 'не закончено')
+})
+
+await group('сверка: основное пусто - запасное берётся целиком, с настройками', async () => {
+  const primary = new FakeDriver('idb')
+  const strayState = strayStateOf()
+  const { stray } = strayLocal(strayState, null)
+  const r = await loadAll(primary, NOW, { stray })
+  assertEqual(r.state, { state: strayState, source: 'stored', dropped: 0 }, 'состояние запасного режима')
+  assertEqual(JSON.parse(primary.data.get(KEYS.state)!), strayState, 'записано в основной')
+  assertEqual(r.state.state.settings.defaultRestSec, 150, 'настройки запасного режима не потеряны')
+  assertEqual([r.stray.status, r.stray.moved], ['done', 2], 'итог')
+})
+
+await group('сверка: битое основное уже в копии - запасное занимает его место', async () => {
+  const primary = new FakeDriver('idb')
+  primary.data.set(KEYS.state, '{битое')
+  const strayState = strayStateOf()
+  const { stray } = strayLocal(strayState, null)
+  const r = await loadAll(primary, NOW, { stray })
+  assertEqual(primary.data.get(KEYS.stateBackup), '{битое', 'битое отложено до записи')
+  assertEqual(r.state.state, strayState, 'в работе состояние запасного режима')
+  assertEqual(r.stray.status, 'done', 'итог')
+})
+
+await group('сверка: нечитаемое запасное только переименовывается', async () => {
+  const primary = new FakeDriver('idb')
+  primary.data.set(KEYS.state, FIXTURE_TEXT)
+  const ls = new FakeLocalStorage()
+  ls.setItem(`${LOCAL_PREFIX}state`, '{обрыв')
+  ls.setItem(`${LOCAL_PREFIX}active`, 'null')
+  const r = await loadAll(primary, NOW, { stray: localDriver(ls) })
+  assertEqual(r.stray.keys.map(k => [k.result, k.renamedTo]), [
+    ['unreadable', `migrated.${NOW}.state`],
+    ['unreadable', `migrated.${NOW}.active`],
+  ], 'оба переименованы')
+  assertEqual(primary.data.get(KEYS.state), FIXTURE_TEXT, 'основное не тронуто')
+  assertEqual(primary.data.has(KEYS.active), false, 'черновик не появился')
+  assertEqual(ls.getItem(`${LOCAL_PREFIX}migrated.${NOW}.state`), '{обрыв', 'текст сохранён дословно')
+  assertEqual([r.stray.status, r.stray.moved], ['done', 0], 'итог')
+  assert(r.stray.message !== null && r.stray.message.includes('новых записей в нём не нашлось'), 'строка')
+})
+
+await group('сверка: запасное от более новой сборки и блокировка основного - ничего не трогается', async () => {
+  const newer = new FakeDriver('idb')
+  newer.data.set(KEYS.state, FIXTURE_TEXT)
+  const lsNewer = new FakeLocalStorage()
+  lsNewer.setItem(`${LOCAL_PREFIX}state`, JSON.stringify({ ...strayStateOf(), version: 99 }))
+  const before = snapshot(lsNewer)
+  const r1 = await loadAll(newer, NOW, { stray: localDriver(lsNewer) })
+  assertEqual([r1.stray.keys[0].result, r1.stray.keys[0].problem], ['not-merged', 'newer-version'], 'более новая сборка')
+  assertEqual(r1.stray.keys[1].result, 'absent', 'черновика нет')
+  assertEqual(r1.stray.status, 'incomplete', 'не закончено')
+  assertEqual(snapshot(lsNewer), before, 'localStorage прежний')
+  assertEqual(newer.data.get(KEYS.state), FIXTURE_TEXT, 'основное прежнее')
+
+  const blocked = new FakeDriver('idb')
+  blocked.data.set(KEYS.state, JSON.stringify({ ...fixture(), version: 99 }))
+  const strayState = strayStateOf()
+  const { ls, stray } = strayLocal(strayState, activeStartedAt(fixture(), NOW, 'c1'))
+  const lsBefore = snapshot(ls)
+  const r2 = await loadAll(blocked, NOW, { stray })
+  assertEqual(r2.saveBlock.state, 'newer-version', 'основное заблокировано')
+  assertEqual(r2.stray.keys.map(k => [k.result, k.problem]), [['not-merged', 'blocked'], ['not-merged', 'state-pending']], 'причины')
+  assertEqual(snapshot(ls), lsBefore, 'localStorage прежний')
+  assertEqual(blocked.data.size, 1, 'основной не тронут')
+})
+
+await group('сверка: ключ не переименовался - повторная загрузка не задваивает', async () => {
+  const primary = new FakeDriver('idb')
+  primary.data.set(KEYS.state, FIXTURE_TEXT)
+  const stray = new FakeDriver('local')
+  stray.data.set(KEYS.state, serialize(strayStateOf()))
+  stray.failRemoves = true
+  const r = await loadAll(primary, NOW, { stray })
+  assertEqual([r.stray.keys[0].result, r.stray.keys[0].problem, r.stray.keys[0].renamedTo], ['merged', 'rename-failed', null], 'перенесено, но не переименовано')
+  assertEqual(r.stray.status, 'incomplete', 'не закончено')
+  assertEqual(r.stray.moved, 2, 'перенос состоялся')
+  assert(stray.data.has(`migrated.${NOW}.state`), 'копия успела лечь')
+
+  stray.failRemoves = false
+  const written = primary.data.get(KEYS.state)
+  const again = await loadAll(primary, NOW + 1, { stray })
+  assertEqual([again.stray.status, again.stray.moved], ['done', 0], 'повтор: новых записей нет')
+  assertEqual(again.stray.counts?.sessions, { added: 0, kept: 1, replaced: 0 }, 'тренировка совпала по id')
+  assertEqual(primary.data.get(KEYS.state), written, 'основное не переписано')
+  assertEqual(Object.keys(again.state.state.sessions).length, Object.keys(fixture().sessions).length + 1, 'без дублей')
+  assertEqual(stray.data.has(KEYS.state), false, 'теперь снят')
+})
+
+await group('сверка: занятый ключ копии и смена текста во время переноса не теряют данные', async () => {
+  const primary = new FakeDriver('idb')
+  primary.data.set(KEYS.state, FIXTURE_TEXT)
+  const stray = new FakeDriver('local')
+  const text = serialize(strayStateOf())
+  stray.data.set(KEYS.state, text)
+  stray.data.set(`migrated.${NOW}.state`, 'другое')
+  const r = await loadAll(primary, NOW, { stray })
+  assertEqual(r.stray.keys[0].problem, 'rename-failed', 'занятый ключ копии не затёрт')
+  assertEqual(stray.data.get(`migrated.${NOW}.state`), 'другое', 'чужая копия цела')
+  assertEqual(stray.data.get(KEYS.state), text, 'исходный остался')
+
+  class ChangingDriver extends FakeDriver {
+    reads = 0
+    override async get(key: string): Promise<string | null> {
+      if (key === KEYS.state && ++this.reads === 2) this.data.set(KEYS.state, 'записано другой вкладкой')
+      return super.get(key)
+    }
+  }
+  const changing = new ChangingDriver('local')
+  changing.data.set(KEYS.state, text)
+  const r2 = await loadAll(new FakeDriver('idb'), NOW, { stray: changing })
+  assertEqual(r2.stray.keys[0].problem, 'rename-failed', 'изменённый ключ не удалён')
+  assertEqual(changing.data.get(KEYS.state), 'записано другой вкладкой', 'новый текст ждёт следующей сверки')
+})
+
+await group('сверка: только у IndexedDB; носитель и причины видны в результате', async () => {
+  for (const name of ['local', 'memory'] as const) {
+    const d = new FakeDriver(name)
+    const { ls, stray } = strayLocal(strayStateOf(), null)
+    const before = snapshot(ls)
+    const r = await loadAll(d, NOW, { stray, fallbacks: ['IndexedDB: InvalidStateError'] })
+    assertEqual(r.stray.status, 'none', `${name}: сверки нет`)
+    assertEqual(snapshot(ls), before, `${name}: localStorage не тронут`)
+    assertEqual(r.storage.driver, name, `${name}: имя носителя`)
+    assertEqual(r.storage.fallbacks, ['IndexedDB: InvalidStateError'], `${name}: причины`)
+    assert(r.storage.notice !== null, `${name}: полоса есть`)
+  }
+  const mem = await loadAll(new FakeDriver('memory'), NOW)
+  assert(mem.storage.notice!.includes('не сохранятся после закрытия'), 'полоса памяти')
+  const local = await loadAll(new FakeDriver('local'), NOW)
+  assert(local.storage.notice!.includes('localStorage'), 'полоса запасного режима')
+  const idb = await loadAll(new FakeDriver('idb'), NOW)
+  assertEqual([idb.storage.notice, idb.stray.status], [null, 'none'], 'IndexedDB без запасного: полосы и сверки нет')
+})
+
+await group('openStorage: выбор носителя, сверка и причины', async () => {
+  const strayState = strayStateOf()
+  const { ls } = strayLocal(strayState, null)
+  const f = fakeIdb('ok')
+  const opened = await openStorage(NOW, { indexedDB: f.factory, localStorage: ls })
+  assertEqual(opened.driver.name, 'idb', 'IndexedDB')
+  assert(opened.stray !== null && opened.stray.name === 'local', 'запасной носитель отдан для настроек')
+  assertEqual([opened.result.stray.status, opened.result.stray.moved], ['done', 2], 'сверено')
+  assertEqual(JSON.parse(f.data.get(KEYS.state) as string), strayState, 'в IndexedDB записано')
+  assertEqual(ls.getItem(`${LOCAL_PREFIX}state`), null, 'в localStorage снято')
+  assertEqual(opened.result.storage, { driver: 'idb', fallbacks: [], notice: null }, 'носитель')
+
+  const ls2 = new FakeLocalStorage()
+  const fallback = await openStorage(NOW, { indexedDB: fakeIdb('error').factory, localStorage: ls2 })
+  assertEqual([fallback.driver.name, fallback.stray], ['local', null], 'запасной режим без сверки')
+  assertEqual(fallback.result.storage.fallbacks, ['IndexedDB: InvalidStateError'], 'причина')
+  assert(fallback.result.storage.notice !== null, 'полоса')
+
+  const memory = await openStorage(NOW, { indexedDB: null, localStorage: null })
+  assertEqual(memory.result.storage.driver, 'memory', 'память')
+  assertEqual(memory.result.storage.fallbacks, ['IndexedDB: нет в этом браузере', 'localStorage: нет в этом браузере'], 'причины')
+})
+
+/* ---- копии и стирание ---- */
+
+await group('parseBackupKey: копии битого и перенесённого', () => {
+  assertEqual(parseBackupKey('state.backup'), { kind: 'backup', from: 'state', at: null }, 'основная копия')
+  assertEqual(parseBackupKey('active.backup.1760691600000'), { kind: 'backup', from: 'active', at: 1760691600000 }, 'копия рядом')
+  assertEqual(parseBackupKey(migratedKey('state', 5)), { kind: 'migrated', from: 'state', at: 5 }, 'перенесённое')
+  for (const k of ['state', 'active', 'state.backupx', 'state.backup.', 'state.backup.1e3', 'migrated.x.state', 'migrated.5.other', 'state.backup.99999999999999999999']) {
+    assertEqual(parseBackupKey(k), null, `не копия: ${k}`)
+  }
+})
+
+await group('listBackups: все копии с датой из ключа и размером', async () => {
+  const d = new FakeDriver('idb')
+  d.data.set('state', 'основное')
+  d.data.set('active', 'черновик')
+  d.data.set('state.backup', 'ab')
+  d.data.set('state.backup.5', 'йй')
+  d.data.set('active.backup', '{}')
+  d.data.set('active.backup.7', 'x')
+  d.data.set('migrated.9.state', 'abc')
+  d.data.set('migrated.x.state', 'чужое')
+  const list = await listBackups(d)
+  assertEqual(list, [
+    { key: 'migrated.9.state', kind: 'migrated', from: 'state', at: 9, bytes: 3, driver: 'idb' },
+    { key: 'active.backup.7', kind: 'backup', from: 'active', at: 7, bytes: 1, driver: 'idb' },
+    { key: 'state.backup.5', kind: 'backup', from: 'state', at: 5, bytes: 4, driver: 'idb' },
+    { key: 'active.backup', kind: 'backup', from: 'active', at: null, bytes: 2, driver: 'idb' },
+    { key: 'state.backup', kind: 'backup', from: 'state', at: null, bytes: 2, driver: 'idb' },
+  ], 'порядок, размер в байтах UTF-8, только копии')
+  assertEqual(await listBackups(new FakeDriver()), [], 'пусто')
+
+  const ls = new FakeLocalStorage()
+  ls.setItem(`${LOCAL_PREFIX}migrated.3.active`, 'a')
+  ls.setItem('migrated.4.active', 'не наше')
+  assertEqual((await listBackups(localDriver(ls))).map(e => [e.key, e.driver]), [['migrated.3.active', 'local']], 'localStorage: свои ключи без префикса')
+
+  const failing = new FakeDriver()
+  failing.keys = async () => { throw new Error('носитель недоступен') }
+  let caught: unknown = null
+  try {
+    await listBackups(failing)
+  } catch (err) {
+    caught = err
+  }
+  assert(caught instanceof Error && caught.message === 'носитель недоступен', 'ошибка носителя проброшена')
+})
+
+await group('readBackupText: дословный текст копии, основные ключи не читаются', async () => {
+  const d = new FakeDriver()
+  d.data.set('state', 'основное')
+  d.data.set('state.backup.5', '{битое')
+  assertEqual(await readBackupText(d, 'state.backup.5'), '{битое', 'текст')
+  assertEqual(await readBackupText(d, 'active.backup'), null, 'нет копии')
+  let caught: unknown = null
+  try {
+    await readBackupText(d, 'state')
+  } catch (err) {
+    caught = err
+  }
+  assert(caught instanceof RangeError, 'основной ключ - RangeError')
+})
+
+await group('wipeAll: стирает все ключи приложения и только их', async () => {
+  const d = new FakeDriver('idb')
+  for (const k of ['state', 'active', 'state.backup', 'migrated.1.state']) d.data.set(k, 'x')
+  assertEqual(await wipeAll(d), 4, 'число стёртых')
+  assertEqual(d.data.size, 0, 'пусто')
+  assertEqual(await wipeAll(d), 0, 'повтор на пустом')
+
+  const ls = new FakeLocalStorage()
+  ls.setItem(`${LOCAL_PREFIX}state`, 'x')
+  ls.setItem(`${LOCAL_PREFIX}migrated.1.active`, 'x')
+  ls.setItem('other-app', 'чужое')
+  assertEqual(await wipeAll(localDriver(ls)), 2, 'localStorage: свои ключи')
+  assertEqual(snapshot(ls), { 'other-app': 'чужое' }, 'чужой ключ на том же origin цел')
+
+  const stuck = new FakeDriver()
+  stuck.data.set('state', 'x')
+  stuck.failRemoves = true
+  let caught: unknown = null
+  try {
+    await wipeAll(stuck)
+  } catch (err) {
+    caught = err
+  }
+  assert(caught instanceof Error, 'отказ удаления - отказ промиса')
+  assertEqual(stuck.data.size, 1, 'не стёртое видно')
 })
 
 finish()

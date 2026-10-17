@@ -18,6 +18,13 @@ export const IDB_VERSION = 1
 export const LOCAL_PREFIX = 'stolpy:'
 const LOCAL_PROBE_KEY = '__probe__'
 
+/** Общая выборка для keys(): только ключи с префиксом, по возрастанию. */
+function selectKeys(all: Iterable<string>, prefix: string): string[] {
+  const out: string[] = []
+  for (const key of all) if (key.startsWith(prefix)) out.push(key)
+  return out.sort()
+}
+
 function asError(value: unknown, fallback: string): Error {
   if (value instanceof Error) return value
   // DOMException в части окружений не наследует Error
@@ -91,6 +98,11 @@ export function idbDriver(db: IDBDatabase): StorageDriver {
     async remove(key) {
       await run(db, 'readwrite', store => store.delete(key))
     },
+    async keys(prefix = '') {
+      const all = await run(db, 'readonly', store => store.getAllKeys())
+      // приложение пишет только строковые ключи; чужие типы ключей не наши
+      return selectKeys(all.filter((k): k is string => typeof k === 'string'), prefix)
+    },
   }
 }
 
@@ -107,6 +119,14 @@ export function localDriver(storage: Storage, prefix: string = LOCAL_PREFIX): St
     },
     async remove(key) {
       storage.removeItem(prefix + key)
+    },
+    async keys(keyPrefix = '') {
+      const own: string[] = []
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i)
+        if (key !== null && key.startsWith(prefix)) own.push(key.slice(prefix.length))
+      }
+      return selectKeys(own, keyPrefix)
     },
   }
 }
@@ -125,6 +145,9 @@ export function memoryDriver(initial: Record<string, string> = {}): StorageDrive
     },
     async remove(key) {
       data.delete(key)
+    },
+    async keys(prefix = '') {
+      return selectKeys(data.keys(), prefix)
     },
   }
 }

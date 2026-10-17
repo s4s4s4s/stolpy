@@ -6,7 +6,8 @@ import {
   runElapsedMs, signalsDue, startHold, startInterval, startRest, startStopwatch,
   stopwatchDurationSec, stopwatchElapsedMs,
 } from '../src/core/timers.ts'
-import type { IntervalProtocol } from '../src/core/types.ts'
+import type { IntervalProtocol, IntervalRun } from '../src/core/types.ts'
+import type { SignalTick } from '../src/core/timers.ts'
 import { CUSTOM_PROTOCOL_LIMITS } from '../src/data/protocols.ts'
 
 /* Образец: разминка 10, работа 20, отдых 10, работа 20, заминка 5 = 65 с.
@@ -141,9 +142,12 @@ group('план сигналов', () => {
   assertEqual(short.map(s => s.kind), ['long'], 'фаза не длиннее 3 с без тройного')
 })
 
+/* Тики одного прогона без смены его состояния между ними. */
+const ticks = (run: IntervalRun, a: number, b: number): [SignalTick, SignalTick] => [{ now: T0 + a, run }, { now: T0 + b, run }]
+
 group('signalsDue: обычный тик', () => {
   const run = startInterval('iv', T0)
-  const due = (a: number, b: number) => signalsDue(T0 + a, T0 + b, run, P).map(s => `${s.kind}@${s.atMs / 1000}`)
+  const due = (a: number, b: number) => signalsDue(...ticks(run, a, b), P).map(s => `${s.kind}@${s.atMs / 1000}`)
   assertEqual(due(6_900, 7_100), ['triple@7'], 'предупреждение')
   assertEqual(due(7_000, 7_250), [], 'левая граница исключена')
   assertEqual(due(6_750, 7_000), ['triple@7'], 'правая граница включена')
@@ -159,21 +163,43 @@ group('signalsDue: возврат из фона отдаёт только пос
   /* разминка 2 (длинный на 2), работа 4 (тройной на 3, длинный на 6), без заминки */
   const P2: IntervalProtocol = { ...P, warmupSec: 2, workSec: 4, rounds: 1, cooldownSec: 0 }
   const run = startInterval('iv', T0)
-  const fmt = (a: number, b: number) => signalsDue(T0 + a, T0 + b, run, P2).map(s => `${s.kind}@${s.atMs / 1000}`)
+  const fmt = (a: number, b: number) => signalsDue(...ticks(run, a, b), P2).map(s => `${s.kind}@${s.atMs / 1000}`)
   assertEqual(fmt(1_900, 1_900 + BACKGROUND_GAP_MS), ['long@2', 'triple@3'], 'ровно на пороге разрыва: обычный тик, оба')
   assertEqual(fmt(1_900, 1_900 + BACKGROUND_GAP_MS + 1), ['triple@3'], 'за порогом: только последний')
   assertEqual(fmt(0, 60_000), ['long@6'], 'минута в фоне: один сигнал')
   assertEqual(fmt(0, 2_900), ['long@2'], 'фон, в промежутке один')
-  assertEqual(signalsDue(T0 + 1_000, T0 + 2_900, run, P), [], 'фон без сигналов в промежутке')
+  assertEqual(signalsDue(...ticks(run, 1_000, 2_900), P), [], 'фон без сигналов в промежутке')
 })
 
 group('signalsDue: пауза', () => {
   const run = pauseInterval(startInterval('iv', T0), T0 + 8_000)
-  assertEqual(signalsDue(T0 + 8_000, T0 + 40_000, run, P), [], 'в паузе сигналов нет')
-  const before = signalsDue(T0 + 6_500, T0 + 20_000, run, P)
+  assertEqual(signalsDue(...ticks(run, 8_000, 40_000), P), [], 'в паузе сигналов нет')
+  const before = signalsDue(...ticks(run, 6_500, 20_000), P)
   assertEqual(before.map(s => `${s.kind}@${s.atMs / 1000}`), ['triple@7'], 'до паузы сигнал успел')
   const resumed = resumeInterval(run, T0 + 28_000)
-  assertEqual(signalsDue(T0 + 29_000, T0 + 30_100, resumed, P).map(s => s.kind), ['long'], 'после возобновления время продолжается')
+  assertEqual(signalsDue(...ticks(resumed, 29_000, 30_100), P).map(s => s.kind), ['long'], 'после возобновления время продолжается')
+})
+
+group('signalsDue: тик в паузе, затем возобновление - прозвучавший сигнал не повторяется', () => {
+  // работа 10, отдых 10, два раунда; long на 10 с уже прозвучал
+  const P3: IntervalProtocol = { ...P, warmupSec: 0, workSec: 10, restSec: 10, rounds: 2, cooldownSec: 0 }
+  const started = startInterval('iv', T0)
+  assertEqual(signalsDue({ now: T0 + 9_900, run: started }, { now: T0 + 10_050, run: started }, P3).map(s => s.atMs), [10_000], 'long на 10 с')
+  const paused = pauseInterval(started, T0 + 10_100)
+  const resumed = resumeInterval(paused, T0 + 20_000)
+  const repeat = signalsDue({ now: T0 + 19_850, run: paused }, { now: T0 + 20_100, run: resumed }, P3)
+  assertEqual(repeat, [], 'тик в паузе 19 850, возобновление 20 000, тик 20 100: сигналов нет')
+  // пауза длилась 9 900 мс: тройной за 3 с до конца отдыха (17 000 прошедшего) наступает на 26 900 по часам
+  const later = signalsDue({ now: T0 + 26_800, run: resumed }, { now: T0 + 27_000, run: resumed }, P3)
+  assertEqual(later.map(s => `${s.kind}@${s.atMs}`), ['triple@17000'], 'тройной перед концом отдыха наступает по прошедшему без паузы')
+  // пауза и возобновление между двумя тиками без промежуточного тика
+  const quick = resumeInterval(pauseInterval(started, T0 + 9_950), T0 + 15_000)
+  assertEqual(signalsDue({ now: T0 + 9_900, run: started }, { now: T0 + 15_100, run: quick }, P3).map(s => s.atMs), [10_000],
+    'сигнал между началом паузы и концом тика: один раз')
+  // новый прогон на том же элементе отсчитывается с нуля
+  const other = startInterval('iv', T0 + 50_000)
+  assertEqual(signalsDue({ now: T0 + 59_900, run: started }, { now: T0 + 60_050, run: other }, P3).map(s => s.atMs), [10_000],
+    'другой прогон: прошедшее по новому прогону')
 })
 
 group('holdSteps', () => {
@@ -218,11 +244,23 @@ group('holdView, автопереход, пауза', () => {
   assertEqual(advanceHold(run, steps, T0 + 5_000), { run, crossed: 0, finished: false }, 'до конца ничего не меняется')
 
   const paused = pauseHold(run, T0 + 4_000)
+  assertEqual([paused.pausedAt, paused.stepStartedAt, paused.stepEndsAt], [T0 + 4_000, T0, T0 + 10_000], 'пауза пишет только pausedAt')
+  assertEqual(pauseHold(run, T0 + 99_000).pausedAt, T0 + 10_000, 'пауза после конца шага зажата концом')
+  assertEqual(pauseHold(run, T0 - 500).pausedAt, T0, 'часы назад: пауза не раньше начала шага')
   assertEqual(holdView(paused, steps, T0 + 500_000)!.remainingSec, 6, 'пауза держит остаток')
   assertEqual(advanceHold(paused, steps, T0 + 500_000).crossed, 0, 'на паузе не переходит')
   assertEqual(pauseHold(paused, T0 + 9_000), paused, 'повторная пауза')
   const resumed = resumeHold(paused, T0 + 100_000)
-  assertEqual([resumed.stepEndsAt, resumed.stepStartedAt, resumed.paused], [T0 + 106_000, T0 + 100_000, undefined], 'возобновление продолжает остаток')
+  assertEqual(
+    [resumed.stepEndsAt, resumed.stepStartedAt, resumed.pausedAt],
+    [T0 + 106_000, T0 + 96_000, undefined],
+    'возобновление сдвигает метки шага на длину паузы',
+  )
+  assert(!('pausedAt' in resumed), 'после возобновления поля pausedAt нет')
+  assertEqual(holdView(resumed, steps, T0 + 100_000)!.remainingSec, 6, 'остаток после возобновления прежний')
+  assertEqual(resumeHold(paused, T0 + 1_000).stepEndsAt, T0 + 10_000, 'часы назад: сдвиг не отрицательный')
+  const again = pauseHold(resumed, T0 + 102_000)
+  assertEqual(holdView(again, steps, T0 + 900_000)!.remainingSec, 4, 'вторая пауза держит остаток')
   assertEqual(resumeHold(run, T0), run, 'возобновление без паузы')
 
   assertEqual(holdDoneSec(run, steps, T0 + 4_000), 4, 'фактически выдержано 4 с')

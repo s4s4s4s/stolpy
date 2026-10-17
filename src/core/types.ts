@@ -17,6 +17,11 @@ export type CardioMode =
   | 'walk' | 'incline-walk' | 'jog' | 'run' | 'bike' | 'row' | 'elliptical' | 'swim' | 'jump-rope' | 'other'
 export type DateISO = string      // 'YYYY-MM-DD', местная дата
 export type Millis = number       // Date.now()
+/* Минуты (или секунды, смотря где применено) по столпам; ключа нет, если по столпу нуль. */
+export type Split = Partial<Record<Pillar, number>>
+/* Источник идентификаторов: префикс -> уникальный id. В приложении это
+   idFactory(Date.now()), в тестах - счётчик. */
+export type IdFactory = (prefix: string) => string
 
 /* ---- библиотека ---- */
 export interface ExerciseDefaults {
@@ -41,6 +46,10 @@ export interface Exercise {
   custom?: true
 }
 
+/* Библиотека упражнений по id: встроенные плюс свои. Ядро получает её
+   параметром и src/data не читает. */
+export type ExerciseLibrary = Readonly<Record<string, Exercise>>
+
 /* ---- шаблоны ---- */
 export interface TemplateItem {
   exerciseId: string
@@ -51,7 +60,16 @@ export interface TemplateItem {
   restSec?: number
   minutes?: number                // кардио
   protocolId?: string             // интервалы
+  customProtocol?: CustomProtocolParams  // значения своего протокола при protocolId 'custom'
   cue?: string                    // подсказка к выполнению в этом шаблоне
+}
+/* Значения своего интервального протокола (пределы раздела 3.4 плана). */
+export interface CustomProtocolParams {
+  workSec: number
+  restSec: number
+  rounds: number
+  warmupSec: number
+  cooldownSec: number
 }
 export interface Template {
   id: string
@@ -78,6 +96,9 @@ export interface IntervalProtocol {
   note: string
   source: string
 }
+/* Набор протоколов, который ядро получает параметром (в приложении это
+   INTERVAL_PROTOCOLS из src/data). */
+export type ProtocolLibrary = readonly IntervalProtocol[]
 
 /* ---- тренировка ---- */
 export type SetKind = 'warmup' | 'work' | 'failure'
@@ -92,8 +113,11 @@ export interface StrengthSet {
   rir?: number                    // 0..5, необязательно
   doneAt: Millis
 }
-interface ItemBase { id: string; exerciseId: string; note?: string }
-export interface StrengthItem extends ItemBase {
+/* Общее у всех элементов тренировки. Элементы с упражнением из библиотеки
+   добавляют exerciseId; внешнее занятие упражнения не имеет. */
+interface ItemBase { id: string; note?: string }
+interface ExerciseItemBase extends ItemBase { exerciseId: string }
+export interface StrengthItem extends ExerciseItemBase {
   type: 'strength'
   unit: 'reps' | 'seconds'
   planned: PlannedSet[]
@@ -101,7 +125,7 @@ export interface StrengthItem extends ItemBase {
   restSec: number
   goal?: { kind: 'total-reps'; reps: number }      // «плотность»: 25 за минимум подходов
 }
-export interface CardioItem extends ItemBase {
+export interface CardioItem extends ExerciseItemBase {
   type: 'cardio'
   mode: CardioMode
   durationSec: number
@@ -109,7 +133,7 @@ export interface CardioItem extends ItemBase {
   avgHr?: number
   talkTest?: boolean              // мог говорить предложениями
 }
-export interface IntervalItem extends ItemBase {
+export interface IntervalItem extends ExerciseItemBase {
   type: 'intervals'
   mode: CardioMode
   protocol: IntervalProtocol      // снимок, свой протокол имеет id 'custom'
@@ -117,7 +141,7 @@ export interface IntervalItem extends ItemBase {
   peakHr?: number
 }
 export interface Hold { seconds: number; side?: Side; eyesClosed?: boolean; doneAt: Millis }
-export interface HoldItem extends ItemBase {
+export interface HoldItem extends ExerciseItemBase {
   type: 'hold'
   perSide: boolean
   plannedSets: number
@@ -130,7 +154,7 @@ export interface ExternalItem extends ItemBase {
   activityTitle: string
   durationMin: number
   rpe?: number                    // 1..10
-  split: Partial<Record<Pillar, number>>   // минуты по столпам, сумма не больше durationMin
+  split: Split                    // минуты по столпам, сумма не больше durationMin
 }
 export type SessionItem = StrengthItem | CardioItem | IntervalItem | HoldItem | ExternalItem
 
@@ -147,6 +171,7 @@ export interface Session {
   items: SessionItem[]
   note?: string
   excludeFromWeek?: boolean
+  energyKcal?: number             // калории, введённые руками; уходят в Health, сами не считаются
   health?: { sentAt: Millis; confirmed: boolean }
 }
 
@@ -154,7 +179,9 @@ export interface Session {
 export interface RestTimer { itemId: string; startedAt: Millis; endsAt: Millis }
 export interface Stopwatch { itemId: string; startedAt: Millis; pausedAt?: Millis; pausedTotalMs: number }
 export interface IntervalRun { itemId: string; startedAt: Millis; pausedAt?: Millis; pausedTotalMs: number }
-export interface HoldRun { itemId: string; stepIndex: number; stepStartedAt: Millis; stepEndsAt: Millis; paused?: boolean }
+/* Удержания идут по шагам. Пока pausedAt задан, шаг на паузе и остаток равен
+   stepEndsAt - pausedAt; при возобновлении обе метки шага сдвигаются на длину паузы. */
+export interface HoldRun { itemId: string; stepIndex: number; stepStartedAt: Millis; stepEndsAt: Millis; pausedAt?: Millis }
 export interface ActiveSession {
   version: number
   session: Session
@@ -218,7 +245,9 @@ export interface ProgramProgress {
   trainingWeekdays: number[]      // 0 = понедельник, ровно три, через день
   phaseIndex: number
   phaseStartedWeek: number        // сквозная неделя, с которой идёт текущая фаза
-  completedDays: { date: DateISO; dayKey: string; sessionId: string }[]
+  /* phaseIndex - фаза, в которой день выполнен (ставит completeProgramDay);
+     у записей до появления поля его нет, они относятся к фазе по дате. */
+  completedDays: { date: DateISO; dayKey: string; sessionId: string; phaseIndex?: number }[]
   measurements: { date: DateISO; reps: number }[]
   exitConfirmedAt?: Millis
   stoppedAt?: Millis
@@ -226,8 +255,12 @@ export interface ProgramProgress {
 
 /* ---- тесты формы ---- */
 export type TestUnit = 'kg' | 'reps' | 'score' | 'cm' | 'sec' | 'ratio' | 'm' | 'bpm'
-export interface NormBand { upTo?: number; from?: number; label: string }   // полуинтервалы
+export interface NormBand {
+  upTo?: number; from?: number; label: string   // полуинтервалы [from, upTo)
+  flag?: true                     // в интерфейсе красная точка
+}
 export interface NormTable { ageFrom: number; ageTo: number; bands: NormBand[]; better: 'higher' | 'lower' }
+export type DerivedKind = 'vo2max'
 export interface FormTest {
   id: string
   title: string
@@ -239,6 +272,8 @@ export interface FormTest {
   norms: NormTable[]
   reference?: string
   linkedExerciseId?: string       // подтягивания: совместный замер с программой
+  pillar: Pillar | null           // null: общее здоровье, не столп
+  derived?: DerivedKind           // производная величина, считается из результата
 }
 export interface TestResult {
   id: string
@@ -273,6 +308,8 @@ export interface Settings {
   healthShortcutName: string
   onboardingDone: boolean
 }
+/* Всё, что нужно подсчётам недели от настроек: только цели. */
+export type GoalsSource = Pick<Settings, 'goals'>
 export interface AppState {
   version: number
   settings: Settings
@@ -293,6 +330,10 @@ export interface StorageDriver {
   get(key: string): Promise<string | null>
   set(key: string, value: string): Promise<void>
   remove(key: string): Promise<void>
+  /** Ключи приложения на этом носителе, начинающиеся с prefix (без него -
+      все), по возрастанию. Префикс носителя (stolpy: у localStorage) в
+      ответ не входит: ключи те же, что принимают get, set и remove. */
+  keys(prefix?: string): Promise<string[]>
 }
 
 /* ---- результаты подсчёта недели (раздел 4 плана) ---- */
@@ -323,5 +364,5 @@ export interface WeekSummary {
 export interface ExternalActivity {
   id: string
   title: string
-  splitPer60: Partial<Record<Pillar, number>>   // минуты по столпам на 60 минут занятия, сумма 60
+  splitPer60: Split               // минуты по столпам на 60 минут занятия, сумма 60
 }

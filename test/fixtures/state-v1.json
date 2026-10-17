@@ -187,7 +187,8 @@
           "peakHr": 176
         }
       ],
-      "note": "по парку"
+      "note": "по парку",
+      "energyKcal": 320
     },
     "s-balance": {
       "id": "s-balance",
@@ -237,7 +238,6 @@
       "items": [
         {
           "id": "e1",
-          "exerciseId": "external",
           "type": "external",
           "activityId": "football",
           "activityTitle": "Футбол",

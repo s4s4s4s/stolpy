@@ -1,15 +1,19 @@
 import type {
-  AppState, DateISO, MuscleGroup, Pillar, PillarProgress, Place, Program, ProgramPhase, ProgramProgress,
+  AppState, DateISO, ExerciseLibrary, MuscleGroup, Pillar, PillarProgress, Place, Program, ProgramPhase, ProgramProgress,
   Template, WeekSummary,
 } from './types'
 import { PILLARS } from './types'
 import { PILLAR_TITLE } from './pillars'
-import { addDays, daysBetween, weekdayIndexMon, weekStartOf } from './dates'
+import { addDays, weekdayIndexMon, weekStartOf } from './dates'
+import type { ProgramPosition } from './program'
+import type { WeekSettings } from './week'
+import {
+  dayKeyFor, isDayCompleted, isProgramActive, isTrainingDay, measurementDue, programPosition, trainingDayNumber,
+} from './program'
 import { daysWord, minutesWord, sessionsWord, setsWord } from './plural'
 import {
-  STRENGTH_DAY_MIN_SETS, dayLoad, exerciseLookup, pillarDeficit, weekProgress,
+  STRENGTH_DAY_MIN_SETS, dayLoad, exerciseLookup, isSecondaryRequired, pillarDeficit, weekProgress,
 } from './week'
-import type { ExerciseLibrary, GoalsSource } from './week'
 
 /* «Что сегодня» (раздел 4.7 плана, экран 6.1). Чистая функция: часы, хранилище
    и библиотеки не читаются, всё приходит во входе. Ядро не импортирует src/data. */
@@ -34,7 +38,7 @@ export interface WhatTodayInput {
   templates: readonly Template[]       // встроенные и пользовательские шаблоны
   place?: Place                        // фильтр по месту; без него берётся место последней сессии
   program?: ActiveProgram | null       // активная программа и её прогресс
-  settings?: GoalsSource               // цели недели; без него state.settings
+  settings?: WeekSettings              // цели недели и данные для зон пульса; без него state.settings
 }
 
 export type SuggestionKind = 'program' | 'template' | 'daily-light' | 'external' | 'rest'
@@ -58,6 +62,7 @@ export interface ProgramToday {
   dayNumber: number                    // номер тренировочного дня в неделе, с 1
   daysPerWeek: number
   deload: boolean
+  measurementDue: boolean               // пора мерить максимум (раз в measurement.everyDays суток)
 }
 
 export interface WhatToday {
@@ -73,57 +78,48 @@ export interface WhatToday {
 
 /* Сегодняшний тренировочный день активной программы, либо null: программа
    остановлена, не началась или кончилась, сегодня не тренировочный день недели
-   или день уже отмечен выполненным. Ключ дня берётся из ротации фазы по
-   сквозному счётчику выполненных дней фазы (пропуск сетку не сдвигает). */
+   или день уже отмечен выполненным. Неделя, фаза, ключ дня, разгрузка и замер
+   считаются функциями program.ts: здесь своей арифметики программы нет. */
 export function programToday(active: ActiveProgram | null | undefined, today: DateISO): ProgramToday | null {
   const live = liveProgram(active, today)
   if (!live) return null
-  const { program, progress, week, phase, phaseIndex } = live
-  const weekdays = [...progress.trainingWeekdays].sort((a, b) => a - b)
-  const slot = weekdays.indexOf(weekdayIndexMon(today))
-  if (slot < 0) return null
-  if (progress.completedDays.some(d => d.date === today)) return null
-
-  const phaseStart = addDays(progress.startedOn, (progress.phaseStartedWeek - 1) * 7)
-  const doneInPhase = progress.completedDays.filter(d => d.date >= phaseStart && d.date < today).length
-  const rotation = phase.rotation.length > 0 ? phase.rotation : phase.days.map(d => d.key)
-  if (rotation.length === 0) return null
-  const dayKey = rotation[doneInPhase % rotation.length]
+  const { program, progress, position } = live
+  if (!isTrainingDay(progress, today) || isDayCompleted(progress, today)) return null
+  const { phase } = position
+  if (phase.rotation.length === 0) return null
+  const dayKey = dayKeyFor(progress, phase)
   const day = phase.days.find(d => d.key === dayKey)
   if (!day) return null
 
   return {
-    phaseIndex,
+    phaseIndex: position.phaseIndex,
     phase,
-    week,
-    weekInPhase: week - progress.phaseStartedWeek + 1,
+    week: position.week,
+    weekInPhase: position.weekInPhase,
     dayKey,
     dayTitle: day.title,
-    dayNumber: slot + 1,
-    daysPerWeek: weekdays.length,
-    deload: program.deloadEveryWeeks > 0 && week % program.deloadEveryWeeks === 0,
+    dayNumber: trainingDayNumber(progress, today),
+    daysPerWeek: progress.trainingWeekdays.length,
+    deload: position.deload,
+    measurementDue: measurementDue(progress, today, program.measurement.everyDays),
   }
 }
 
 interface LiveProgram {
   program: Program
   progress: ProgramProgress
-  week: number
-  phase: ProgramPhase
-  phaseIndex: number
+  position: ProgramPosition
 }
 
+/* Программа идёт: не остановлена, началась, срок не вышел, прогресс её, фазы есть. */
 function liveProgram(active: ActiveProgram | null | undefined, today: DateISO): LiveProgram | null {
   if (!active) return null
   const { program, progress } = active
-  if (progress.stoppedAt !== undefined) return null
-  const elapsed = daysBetween(progress.startedOn, today)
-  if (elapsed < 0) return null
-  const week = Math.floor(elapsed / 7) + 1
-  if (week > program.weeks) return null
-  const phase = program.phases[progress.phaseIndex]
-  if (!phase) return null
-  return { program, progress, week, phase, phaseIndex: progress.phaseIndex }
+  if (!isProgramActive(progress)) return null
+  if (progress.programId !== program.id || program.phases.length === 0) return null
+  const position = programPosition(program, progress, today)
+  if (position.week < 1 || position.week > program.weeks) return null
+  return { program, progress, position }
 }
 
 function dailyLightSuggestion(
@@ -131,7 +127,7 @@ function dailyLightSuggestion(
 ): Suggestion | null {
   const live = liveProgram(active, today)
   if (!live) return null
-  const eligible = live.phase.dailyLight ?? DAILY_LIGHT_PHASES.includes(live.phase.id)
+  const eligible = live.position.phase.dailyLight ?? DAILY_LIGHT_PHASES.includes(live.position.phase.id)
   if (!eligible) return null
   const templateId = live.program.dailyLightTemplateId
   const doneToday = Object.values(state.sessions ?? {}).some(
@@ -143,7 +139,7 @@ function dailyLightSuggestion(
     kind: 'daily-light',
     pillar: null,
     title: template?.title ?? 'Ежедневная мелочь',
-    reason: `Фаза «${live.phase.title}»: короткая запись одним касанием, в недельный зачёт не идёт.`,
+    reason: `Фаза «${live.position.phase.title}»: короткая запись одним касанием, в недельный зачёт не идёт.`,
     templateId,
   }
 }
@@ -238,7 +234,7 @@ function remainingText(p: PillarProgress): string {
     else parts.push(`${left} ${sessionsWord(left)}`)
   }
   const s = p.secondary
-  if (s && p.pillar !== 'intervals') {
+  if (s && isSecondaryRequired(p.pillar)) {
     const daysLeft = Math.ceil(s.target - s.value)
     if (daysLeft > 0) parts.push(`${daysLeft} ${daysWord(daysLeft)}`)
   }
@@ -369,7 +365,8 @@ export function whatToday(input: WhatTodayInput): WhatToday {
       pillar: 'strength',
       title: `День программы: неделя ${programDay.week}, день ${programDay.dayNumber}`,
       reason: `${programDay.dayTitle}, фаза «${programDay.phase.title}».` +
-        (programDay.deload ? ' Разгрузочная неделя: подходов меньше.' : ''),
+        (programDay.deload ? ' Разгрузочная неделя: подходов меньше.' : '') +
+        (programDay.measurementDue ? ' Пора замерить максимум.' : ''),
       programDayKey: programDay.dayKey,
     })
   }

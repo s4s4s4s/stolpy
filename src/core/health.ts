@@ -5,7 +5,7 @@
    пояс приходят параметрами. */
 
 import type {
-  CardioMode, Exercise, Millis, Pillar, Session, SessionItem, StrengthItem, StrengthSet,
+  CardioMode, Exercise, ExerciseLibrary, Millis, Pillar, Session, SessionItem, StrengthItem, StrengthSet,
 } from './types.ts'
 import { PILLARS } from './pillars.ts'
 
@@ -23,12 +23,7 @@ export interface HealthPayload {
   energyKcal?: number
 }
 
-/** Библиотека упражнений: массив или словарь по id. */
-export type ExerciseLibrary = ReadonlyArray<Exercise> | Readonly<Record<string, Exercise>>
-
 export interface HealthPayloadOptions {
-  /** Калории, введённые руками. В сессии такого поля нет, поэтому их передаёт экран. */
-  energyKcal?: number
   /** Смещение местного времени от UTC в минутах (+240 для UTC+4). По умолчанию из системы. */
   tzOffsetMin?: number
 }
@@ -62,9 +57,7 @@ function finitePositive(n: unknown): n is number {
 }
 
 function lookup(library: ExerciseLibrary, id: string): Exercise | undefined {
-  if (Array.isArray(library)) return (library as ReadonlyArray<Exercise>).find(e => e.id === id)
-  const record = library as Readonly<Record<string, Exercise>>
-  return Object.prototype.hasOwnProperty.call(record, id) ? record[id] : undefined
+  return Object.prototype.hasOwnProperty.call(library, id) ? library[id] : undefined
 }
 
 function setSeconds(set: StrengthSet, unit: StrengthItem['unit']): number {
@@ -163,14 +156,19 @@ export function healthType(session: Session, library: ExerciseLibrary): HealthTy
   return PILLAR_TYPE[pillar]
 }
 
-/** Продолжительность: от начала до конца сессии, а если конца нет или он не позже начала, сумма элементов.
-    Известный дефект Команд (длительность 0) обходится тем, что число всегда считается здесь. */
+/** Продолжительность по разделу 8 плана: сумма элементов. Время от начала до
+    конца сессии не берётся первым: кнопку «Завершить» нажимают и через часы
+    после последнего подхода, и в Health ушла бы чужая длительность. Время по
+    часам - запасной путь, только когда элементы дают ноль. Известный дефект
+    Команд (длительность 0) обходится тем, что число всегда считается здесь. */
 export function sessionSeconds(session: Session): number {
+  const items = Math.round(session.items.reduce((sum, item) => sum + itemSeconds(item), 0))
+  if (items > 0) return items
   const { startedAt, endedAt } = session
   if (typeof endedAt === 'number' && Number.isFinite(endedAt) && Number.isFinite(startedAt) && endedAt > startedAt) {
     return Math.round((endedAt - startedAt) / 1000)
   }
-  return Math.round(session.items.reduce((sum, item) => sum + itemSeconds(item), 0))
+  return 0
 }
 
 function pad(n: number, width = 2): string {
@@ -194,7 +192,7 @@ function systemOffsetMin(ms: Millis): number {
   return -new Date(ms).getTimezoneOffset()
 }
 
-/** Данные для Команды. Расстояние берётся из кардио-элементов, калории только из options. */
+/** Данные для Команды. Расстояние берётся из кардио-элементов, калории только из session.energyKcal. */
 export function healthPayload(
   session: Session,
   library: ExerciseLibrary,
@@ -211,7 +209,7 @@ export function healthPayload(
     0,
   )
   if (km > 0) payload.distanceKm = Math.round(km * 100) / 100
-  if (finitePositive(options.energyKcal)) payload.energyKcal = Math.round(options.energyKcal)
+  if (finitePositive(session.energyKcal)) payload.energyKcal = Math.round(session.energyKcal)
   return payload
 }
 

@@ -247,6 +247,8 @@ group('sanitizeExternalItem: разбивка больше длительнос�
   const notObj = sanitizeExternalItem({ ...clone(item), split: 'x' })
   assertEqual([notObj.value !== null, notObj.dropped], [true, 1], 'разбивка не объект')
   assertEqual(sanitizeExternalItem({ ...clone(item), split: {} }).dropped, 0, 'пустая разбивка не потеря')
+  const legacy = sanitizeExternalItem({ ...clone(item), exerciseId: 'football' })
+  assert(legacy.value !== null && !('exerciseId' in legacy.value), 'чужой exerciseId у внешнего занятия не переносится')
   assertEqual(sanitizeExternalItem({ ...clone(item), durationMin: 0 }).value, null, 'длительность 0')
   assertEqual(sanitizeExternalItem({ ...clone(item), rpe: 11 }).value, null, 'rpe 11')
   assertEqual(sanitizeExternalItem({ ...clone(item), rpe: 0 }).value, null, 'rpe 0')
@@ -273,13 +275,20 @@ group('sanitizeSession: обязательные поля и элементы п
   ]
   const r = sanitizeSession({ ...base, items })
   assertEqual(r.value?.items.map(i => i.id), ['a', 'c'], 'неизвестный тип, повтор id и null выпали')
-  assertEqual(r.value?.items[0].exerciseId, 'x', 'повтор id: остаётся первый')
+  const first = r.value?.items[0]
+  assertEqual(first?.type === 'cardio' ? first.exerciseId : undefined, 'x', 'повтор id: остаётся первый')
   assertEqual(r.dropped, 3, 'три потери')
 
   const opt = sanitizeSession({ ...base, endedAt: 500, title: 5, templateId: '', note: 3, excludeFromWeek: 'no', health: { sentAt: 1 }, programRef: { programId: 'p' } })
   assertEqual(opt.value, { ...base, title: '' }, 'битые необязательные поля сняты, сессия жива')
   assertEqual(opt.dropped, 7, 'каждое снятое поле посчитано')
   assertEqual(sanitizeSession({ ...base, endedAt: 1000 }).value?.endedAt, 1000, 'endedAt = startedAt допустим')
+  assertEqual(sanitizeSession({ ...base, energyKcal: 320 }), { value: { ...base, energyKcal: 320 }, dropped: 0 }, 'калории сохраняются')
+  for (const bad of [0, -5, NaN, Infinity, '300']) {
+    const r = sanitizeSession({ ...base, energyKcal: bad })
+    assertEqual([r.value, r.dropped], [base, 1], `калории ${String(bad)} выпадают и считаются`)
+  }
+  assertEqual(sanitizeSession({ ...base, energyKcal: undefined }).dropped, 0, 'нет калорий не потеря')
   assertEqual(sanitizeSession({ ...base, title: undefined }).value?.title, '', 'нет названия - пустое, без потери')
   assertEqual(sanitizeSession({ ...base, title: undefined }).dropped, 0, 'отсутствие названия не потеря')
 })
@@ -386,7 +395,7 @@ function activeOf(over: Partial<ActiveSession> = {}): ActiveSession {
     rest: { itemId: 'i1', startedAt: 100, endsAt: 190 },
     stopwatch: { itemId: 'i3', startedAt: 50, pausedAt: 60, pausedTotalMs: 5 },
     interval: { itemId: 'i2', startedAt: 10, pausedTotalMs: 0 },
-    hold: { itemId: 'i3', stepIndex: 1, stepStartedAt: 10, stepEndsAt: 40, paused: true },
+    hold: { itemId: 'i3', stepIndex: 1, stepStartedAt: 10, stepEndsAt: 40, pausedAt: 20 },
     wakeLockWanted: true,
     ...over,
   }
@@ -423,6 +432,18 @@ group('deserializeActive: таймер на несуществующий эле�
   assertEqual(r.active, { version: 1, session: activeOf().session, wakeLockWanted: false }, 'осталась сессия')
   const minimal = deserializeActive(JSON.stringify({ session: minimalSession() }))
   assertEqual(minimal, { active: { version: 1, session: minimalSession(), wakeLockWanted: false }, source: 'stored', dropped: 0 }, 'черновик без версии и таймеров')
+})
+
+group('deserializeActive: пауза удержания лежит внутри шага', () => {
+  const holdWith = (extra: Record<string, unknown>) =>
+    deserializeActive(JSON.stringify({ ...activeOf(), hold: { itemId: 'i3', stepIndex: 1, stepStartedAt: 10, stepEndsAt: 40, ...extra } }))
+  assertEqual(holdWith({ pausedAt: 10 }).active?.hold?.pausedAt, 10, 'пауза на границе начала')
+  assertEqual(holdWith({ pausedAt: 40 }).active?.hold?.pausedAt, 40, 'пауза на границе конца')
+  for (const bad of [9, 41, '20', -1]) {
+    const r = holdWith({ pausedAt: bad })
+    assertEqual([r.active?.hold, r.dropped], [undefined, 1], `pausedAt ${String(bad)} снимает таймер и считается`)
+  }
+  assertEqual(holdWith({ paused: true }).active?.hold, { itemId: 'i3', stepIndex: 1, stepStartedAt: 10, stepEndsAt: 40 }, 'старое поле paused не переносится')
 })
 
 finish()

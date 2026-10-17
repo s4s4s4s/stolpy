@@ -3,11 +3,11 @@ import {
   addItem, customProtocol, externalSession, finishSession, hasLoggedWork, idFactory, isItemEmpty,
   itemFromExercise, logHold, logSet, missingExerciseIds, newSession, prefillFor, removeHold, removeItem,
   removeSet, saveAsTemplate, sessionFromTemplate, sessionMinutes, sessionSummary, setItemNote,
-  setRestSec, setSessionNote, updateCardio, updateIntervals, updateSet, DEFAULT_REST_SEC,
-  type IdFactory,
+  setRestSec, setSessionEnergy, setSessionNote, updateCardio, updateIntervals, updateSet, DEFAULT_REST_SEC,
 } from '../src/core/session.ts'
 import type {
-  CardioItem, Exercise, HoldItem, IntervalItem, IntervalProtocol, Session, StrengthItem, Template,
+  CardioItem, Exercise, ExerciseLibrary, HoldItem, IdFactory, IntervalItem, IntervalProtocol, Session, StrengthItem,
+  Template,
 } from '../src/core/types.ts'
 
 function ex(partial: Partial<Exercise> & Pick<Exercise, 'id' | 'pillar' | 'input'>): Exercise {
@@ -25,6 +25,8 @@ const LIBRARY: Exercise[] = [
   ex({ id: 'hiit', pillar: 'intervals', input: 'time', cardioMode: 'bike', defaults: { sets: 1, protocolId: 'n4x4' } }),
   ex({ id: 'balance-rdl', pillar: 'balance', input: 'reps', defaults: { sets: 2, reps: [8, 8], perSide: true } }),
 ]
+
+const LIB: ExerciseLibrary = Object.fromEntries(LIBRARY.map(e => [e.id, e]))
 
 const PROTOCOLS: IntervalProtocol[] = [
   { id: 'n4x4', title: '4x4', workSec: 240, restSec: 180, rounds: 4, warmupSec: 600, cooldownSec: 300, note: '', source: 'test' },
@@ -88,7 +90,7 @@ group('newSession: дата, время, чистые поля', () => {
 })
 
 group('sessionFromTemplate: типы элементов и план', () => {
-  const s = sessionFromTemplate(TEMPLATE, LIBRARY, PROTOCOLS, T0, counter())
+  const s = sessionFromTemplate(TEMPLATE, LIB, PROTOCOLS, T0, counter())
   assertEqual(s.title, 'Дом: сила A', 'название')
   assertEqual(s.place, 'home', 'место')
   assertEqual(s.templateId, 'tpl-a', 'ссылка на шаблон')
@@ -122,28 +124,22 @@ group('sessionFromTemplate: типы элементов и план', () => {
 
 group('sessionFromTemplate: снимок протокола, место, ссылки на упражнения', () => {
   const protocols = structuredClone(PROTOCOLS)
-  const s = sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'hiit' }] }, LIBRARY, protocols, T0, counter())
+  const s = sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'hiit' }] }, LIB, protocols, T0, counter())
   protocols[0].workSec = 999
   assertEqual((s.items[0] as IntervalItem).protocol.workSec, 240, 'правка источника не меняет снимок')
   assertEqual((s.items[0] as IntervalItem).protocol.id, 'n4x4', 'протокол упражнения по умолчанию')
 
-  assertEqual(sessionFromTemplate({ ...TEMPLATE, place: 'any' }, LIBRARY, PROTOCOLS, T0, counter()).place, 'home', 'any -> home')
-  assertEqual(sessionFromTemplate({ ...TEMPLATE, place: 'any' }, LIBRARY, PROTOCOLS, T0, counter(), 'outside').place, 'outside', 'явное место')
-  assertEqual(sessionFromTemplate({ ...TEMPLATE, excludeFromWeek: true }, LIBRARY, PROTOCOLS, T0, counter()).excludeFromWeek, true, 'excludeFromWeek')
+  assertEqual(sessionFromTemplate({ ...TEMPLATE, place: 'any' }, LIB, PROTOCOLS, T0, counter()).place, 'home', 'any -> home')
+  assertEqual(sessionFromTemplate({ ...TEMPLATE, place: 'any' }, LIB, PROTOCOLS, T0, counter(), 'outside').place, 'outside', 'явное место')
+  assertEqual(sessionFromTemplate({ ...TEMPLATE, excludeFromWeek: true }, LIB, PROTOCOLS, T0, counter()).excludeFromWeek, true, 'excludeFromWeek')
 
-  const dict = Object.fromEntries(LIBRARY.map(e => [e.id, e]))
-  const protoDict = Object.fromEntries(PROTOCOLS.map(p => [p.id, p]))
-  const a = sessionFromTemplate(TEMPLATE, dict, protoDict, T0, counter())
-  const b = sessionFromTemplate(TEMPLATE, LIBRARY, PROTOCOLS, T0, counter())
-  assertEqual(a, b, 'словарь и массив дают одно и то же')
-
-  assertEqual(missingExerciseIds(TEMPLATE, LIBRARY), ['ghost'], 'список недостающих упражнений')
-  assertEqual(missingExerciseIds(TEMPLATE, dict), ['ghost'], 'то же для словаря')
-  const none = sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'ghost' }] }, LIBRARY, PROTOCOLS, T0, counter())
+  assertEqual(missingExerciseIds(TEMPLATE, LIB), ['ghost'], 'список недостающих упражнений')
+  assertEqual(missingExerciseIds(TEMPLATE, {}), TEMPLATE.items.map(i => i.exerciseId), 'пустая библиотека: не найдено ничего')
+  const none = sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'ghost' }] }, LIB, PROTOCOLS, T0, counter())
   assertEqual(none.items, [], 'все упражнения пропали - пустая сессия')
-  assert(throwsRange(() => sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'hiit', protocolId: 'nope' }] }, LIBRARY, PROTOCOLS, T0, counter())), 'неизвестный протокол - ошибка данных')
-  assert(throwsRange(() => sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'hiit' }] }, LIBRARY, [], T0, counter())), 'нет протоколов - ошибка данных')
-  assert(throwsRange(() => sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'pullup', sets: 0 }] }, LIBRARY, PROTOCOLS, T0, counter())), 'ноль подходов - ошибка данных')
+  assert(throwsRange(() => sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'hiit', protocolId: 'nope' }] }, LIB, PROTOCOLS, T0, counter())), 'неизвестный протокол - ошибка данных')
+  assert(throwsRange(() => sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'hiit' }] }, LIB, [], T0, counter())), 'нет протоколов - ошибка данных')
+  assert(throwsRange(() => sessionFromTemplate({ ...TEMPLATE, items: [{ exerciseId: 'pullup', sets: 0 }] }, LIB, PROTOCOLS, T0, counter())), 'ноль подходов - ошибка данных')
 })
 
 group('itemFromExercise: значения упражнения по умолчанию', () => {
@@ -176,6 +172,12 @@ group('addItem, removeItem, заметки: без мутации', () => {
   assertEqual('note' in setItemNote(noted, item.id, '   ').items[0], false, 'пустая заметка убирает поле')
   assertEqual(setSessionNote(one, 'хорошо').note, 'хорошо', 'заметка сессии')
   assertEqual('note' in setSessionNote(setSessionNote(one, 'x'), undefined), false, 'заметку сессии можно убрать')
+  assertEqual(setSessionEnergy(one, 250.4).energyKcal, 250, 'калории округляются')
+  assertEqual('energyKcal' in setSessionEnergy(setSessionEnergy(one, 250), undefined), false, 'калории можно убрать')
+  assertEqual('energyKcal' in setSessionEnergy(one, 0), false, 'ноль калорий поле не создаёт')
+  assertEqual('energyKcal' in setSessionEnergy(setSessionEnergy(one, 250), -3), false, 'отрицательные снимают поле')
+  assert(throwsRange(() => setSessionEnergy(one, NaN)), 'NaN калорий - ошибка вызова')
+  assertEqual(one.energyKcal, undefined, 'исходная сессия не меняется')
   assertEqual(removeItem(one, item.id).items, [], 'элемент удалён')
   assert(throwsRange(() => removeItem(one, 'nope')), 'удаление неизвестного')
   assert(throwsRange(() => setItemNote(one, 'nope', 'x')), 'заметка неизвестному')
@@ -341,6 +343,7 @@ group('finishSession', () => {
   assert(!hasLoggedWork(empty), 'пустая сессия без работы')
   const ext = externalSession({ activityId: 'yoga', activityTitle: 'Йога', durationMin: 30, split: { mobility: 30 }, date: '2026-10-14' }, T0, ids)
   assert(hasLoggedWork(ext) && !isItemEmpty(ext.items[0]), 'внешнее занятие не пустое')
+  assert(!('exerciseId' in ext.items[0]), 'у внешнего занятия нет exerciseId')
 })
 
 group('sessionSummary: минуты, подходы, тоннаж, по столпам', () => {
@@ -363,7 +366,7 @@ group('sessionSummary: минуты, подходы, тоннаж, по стол
   s = updateCardio(s, bike.id, { durationSec: 1800 })
   s = updateIntervals(s, hiit.id, { roundsDone: 4 })
   s = finishSession(s, T0 + 61 * MIN + 20_000)
-  const sum = sessionSummary(freeze(s), LIBRARY, T0 + 999 * MIN)
+  const sum = sessionSummary(freeze(s), LIB, T0 + 999 * MIN)
   assertEqual(sum.minutes, 61, 'минуты завершённой сессии, now игнорируется')
   assertEqual(sum.sets, 4, 'разминка не считается: жим 2, подтягивания 1, rdl 1')
   assertEqual(sum.tonnageKg, 487.5, '60x5 + 62.5x3 = 487,5; без веса не тоннаж')
@@ -372,12 +375,12 @@ group('sessionSummary: минуты, подходы, тоннаж, по стол
   assertEqual(sum.byPillar.zone2, { sets: 0, minutes: 30 }, 'зона 2')
   assertEqual(sum.byPillar.intervals, { sets: 4, minutes: 16 }, 'интервалы: 4 x 240 с')
   assertEqual(sum.byPillar.mobility, { sets: 0, minutes: 0 }, 'мобильность')
-  const running = sessionSummary({ ...s, endedAt: undefined }, LIBRARY, T0 + 10 * MIN)
+  const running = sessionSummary({ ...s, endedAt: undefined }, LIB, T0 + 10 * MIN)
   assertEqual(running.minutes, 10, 'идущая считается до now')
-  const unknown = sessionSummary(s, [], T0)
+  const unknown = sessionSummary(s, {}, T0)
   assertEqual(unknown.byPillar.strength.sets, 4, 'без библиотеки силовые подходы относятся к силе')
   assertEqual(unknown.byPillar.mobility.minutes, 1.25, 'без библиотеки удержания относятся к мобильности')
-  assertEqual(sessionSummary(newSession({ place: 'home', title: 'T', now: T0, ids }), LIBRARY, T0 - 5 * MIN).minutes, 0, 'время до начала даёт 0')
+  assertEqual(sessionSummary(newSession({ place: 'home', title: 'T', now: T0, ids }), LIB, T0 - 5 * MIN).minutes, 0, 'время до начала даёт 0')
 })
 
 group('sessionSummary: внешнее занятие', () => {
@@ -385,7 +388,7 @@ group('sessionSummary: внешнее занятие', () => {
     { activityId: 'climbing', activityTitle: 'Скалолазание', durationMin: 90, split: { strength: 60, mobility: 30 }, date: '2026-10-14', rpe: 7 },
     T0, counter(),
   )
-  const sum = sessionSummary(s, LIBRARY, T0)
+  const sum = sessionSummary(s, LIB, T0)
   assertEqual(sum.minutes, 90, 'минуты по времени сессии')
   assertEqual(sum.sets, 0, 'силовые минуты в подходы не переводятся')
   assertEqual(sum.byPillar.strength.minutes, 60, 'силовые минуты хранятся минутами')
@@ -455,7 +458,7 @@ group('prefillFor: прошлый раз', () => {
 
 group('saveAsTemplate: из фактических подходов', () => {
   const ids = counter()
-  let s = sessionFromTemplate(TEMPLATE, LIBRARY, PROTOCOLS, T0, ids)
+  let s = sessionFromTemplate(TEMPLATE, LIB, PROTOCOLS, T0, ids)
   const [pull, row, plank, stance, bike, hiit] = s.items
   for (const [reps, kind] of [[6, 'work'], [8, 'work'], [5, 'failure'], [12, 'warmup']] as const) {
     s = logSet(s, pull.id, { kind, reps }, T0 + 1)
@@ -470,7 +473,7 @@ group('saveAsTemplate: из фактических подходов', () => {
   s = updateCardio(s, bike.id, { durationSec: 2700 })
   s = updateIntervals(s, hiit.id, { roundsDone: 8 })
   s = finishSession(s, T0 + 55 * MIN)
-  const tpl = saveAsTemplate(freeze(s), LIBRARY, '  Моя сила  ', T0 + 99, counter())
+  const tpl = saveAsTemplate(freeze(s), LIB, '  Моя сила  ', T0 + 99, counter())
   assert(tpl !== null, 'шаблон создан')
   assertEqual(tpl.title, 'Моя сила', 'название обрезано')
   assertEqual(tpl.id, 'tpl-1', 'id из фабрики')
@@ -490,7 +493,7 @@ group('saveAsTemplate: из фактических подходов', () => {
   ], 'элементы: подходы без разминки, диапазон повторов, perSide по большей стороне')
   assert(!('excludeFromWeek' in tpl), 'без флага недели')
 
-  const fromTemplate = sessionFromTemplate(tpl, LIBRARY, PROTOCOLS, T0, counter())
+  const fromTemplate = sessionFromTemplate(tpl, LIB, PROTOCOLS, T0, counter())
   assertEqual(fromTemplate.items.map(i => i.type), ['strength', 'strength', 'strength', 'hold', 'cardio', 'intervals'], 'шаблон снова запускается')
 
 })
@@ -498,22 +501,22 @@ group('saveAsTemplate: из фактических подходов', () => {
 group('saveAsTemplate: краевые случаи', () => {
   const ids = counter()
   const base = newSession({ place: 'gym', title: 'Зал', now: T0, ids, excludeFromWeek: true })
-  assertEqual(saveAsTemplate(base, LIBRARY, 'X', T0, ids), null, 'пустая сессия - нечего сохранять')
+  assertEqual(saveAsTemplate(base, LIB, 'X', T0, ids), null, 'пустая сессия - нечего сохранять')
   const item = itemFromExercise(LIBRARY[1], PROTOCOLS, ids)
   let s = addItem(base, item)
   s = logSet(s, item.id, { kind: 'warmup', weightKg: 20, reps: 10 }, T0)
-  assertEqual(saveAsTemplate(s, LIBRARY, 'X', T0, ids), null, 'только разминка - нечего сохранять')
+  assertEqual(saveAsTemplate(s, LIB, 'X', T0, ids), null, 'только разминка - нечего сохранять')
   s = logSet(s, item.id, { kind: 'work', weightKg: 60, reps: 5 }, T0)
-  const tpl = saveAsTemplate(s, LIBRARY, '   ', T0 + 20 * 1000, ids)
+  const tpl = saveAsTemplate(s, LIB, '   ', T0 + 20 * 1000, ids)
   assert(tpl !== null, 'шаблон создан')
   assertEqual(tpl.title, 'Зал', 'пустое название заменяется названием сессии')
   assertEqual(tpl.items, [{ exerciseId: 'bench', sets: 1, restSec: 90, reps: 5 }], 'одинаковые повторы - число, а не диапазон')
   assertEqual(tpl.estMinutes, 1, 'минимум одна минута')
   assertEqual(tpl.excludeFromWeek, true, 'флаг недели переносится')
   const ext = externalSession({ activityId: 'yoga', activityTitle: 'Йога', durationMin: 30, split: { mobility: 30 }, date: '2026-10-14' }, T0, ids)
-  assertEqual(saveAsTemplate(ext, LIBRARY, 'Йога', T0, ids), null, 'внешние занятия в шаблон не идут')
+  assertEqual(saveAsTemplate(ext, LIB, 'Йога', T0, ids), null, 'внешние занятия в шаблон не идут')
   const unknown = addItem(base, { id: 'z', type: 'strength', exerciseId: 'deleted', unit: 'reps', planned: [], restSec: 60, sets: [{ kind: 'work', reps: 5, doneAt: 1 }] })
-  assertEqual(saveAsTemplate(unknown, [], 'U', T0, ids)?.pillars, ['strength'], 'упражнения нет в библиотеке - столп силы')
+  assertEqual(saveAsTemplate(unknown, {}, 'U', T0, ids)?.pillars, ['strength'], 'упражнения нет в библиотеке - столп силы')
 })
 
 group('sessionMinutes и idFactory', () => {

@@ -9,23 +9,8 @@
 import { addDays, daysBetween } from './dates.ts'
 import { formatKg } from './format.ts'
 import type {
-  DateISO, FormTest, NormBand, NormTable, Pillar, Settings, TestResult,
+  DateISO, DerivedKind, FormTest, NormBand, NormTable, Settings, TestResult,
 } from './types.ts'
-
-/* Расширения контракта FormTest (types.ts менять нельзя): пометка красной
-   точки у полосы, столп теста и признак производной величины. */
-export interface FormBand extends NormBand {
-  flag?: true                     // в интерфейсе красная точка
-}
-export interface FormNormTable extends NormTable {
-  bands: FormBand[]
-}
-export type DerivedKind = 'vo2max'
-export interface FormTestDef extends FormTest {
-  pillar: Pillar | null           // null: общее здоровье, не столп
-  norms: FormNormTable[]
-  derived?: DerivedKind
-}
 
 export const RESTING_HR_TEST_ID = 'resting-hr'
 export const SOON_DAYS = 5
@@ -54,7 +39,7 @@ export function ageBand<T extends NormTable>(norms: readonly T[], age: number | 
 }
 
 /* Полосы нормы для возраста; пустой список, если норм для него нет. */
-export function normsForAge(test: FormTestDef, age: number | null): FormBand[] {
+export function normsForAge(test: FormTest, age: number | null): NormBand[] {
   return ageBand(test.norms, age)?.bands ?? []
 }
 
@@ -92,7 +77,7 @@ const isValid = (v: unknown): v is number => typeof v === 'number' && Number.isF
 
 type Reduced = { ok: true; result: number } | { ok: false; reason: EvaluateFailure; field?: string }
 
-function reduceValues(test: FormTestDef, values: Record<string, number>): Reduced {
+function reduceValues(test: FormTest, values: Record<string, number>): Reduced {
   const keys = test.fields.map(f => f.key)
   if (keys.length === 0) return { ok: false, reason: 'missing-field' }
   const present = keys.filter(k => values[k] !== undefined && values[k] !== null)
@@ -126,7 +111,7 @@ function reduceValues(test: FormTestDef, values: Record<string, number>): Reduce
   }
 }
 
-function deriveValue(test: FormTestDef, result: number): DerivedValue | undefined {
+function deriveValue(test: FormTest, result: number): DerivedValue | undefined {
   if (test.derived === 'vo2max') {
     /* Формула Купера: дистанция в километрах. */
     const value = round(22.351 * (result / 1000) - 11.288, 1)
@@ -137,7 +122,7 @@ function deriveValue(test: FormTestDef, result: number): DerivedValue | undefine
 
 /* Свёртка полей в результат и полоса нормы для возраста. Без возраста или без
    норм для него band = null (результат при этом считается). */
-export function evaluateTest(test: FormTestDef, values: Record<string, number>, age: number | null): Evaluation {
+export function evaluateTest(test: FormTest, values: Record<string, number>, age: number | null): Evaluation {
   const reduced = reduceValues(test, values)
   if (!reduced.ok) return reduced
   const table = ageBand(test.norms, age)

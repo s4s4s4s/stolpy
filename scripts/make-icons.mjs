@@ -38,6 +38,10 @@ const iconSvg = () => `
 /** Сплэш-экран iOS: полноэкранный тёмный фон с фигурой по центру, без текста.
     Статичная картинка, что видна долю секунды при запуске установленного
     приложения (без неё белая вспышка). */
+/**
+ * @param {number} w
+ * @param {number} h
+ */
 const splashSvg = (w, h) => {
   const scale = (Math.min(w, h) * 0.34) / 512
   const tx = w / 2 - 256 * scale
@@ -80,6 +84,7 @@ writeFileSync(
 )
 console.log('public/favicon.svg')
 
+/** @type {[out: string, svg: string, width: number, height: number][]} */
 const jobs = [
   ['public/icon-512.png', iconSvg(), 512, 512],
   ['public/icon-512-maskable.png', iconSvg(), 512, 512],

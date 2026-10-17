@@ -10,11 +10,11 @@
    интерфейс показывает только личную динамику. */
 
 import { AGE_ANY_TO } from '../core/formtests.ts'
-import type { FormTestDef } from '../core/formtests.ts'
+import type { FormTest } from '../core/types.ts'
 
 const ANY_AGE = { ageFrom: 0, ageTo: AGE_ANY_TO } as const
 
-export const FORM_TESTS: FormTestDef[] = [
+export const FORM_TESTS: FormTest[] = [
   {
     id: 'grip',
     title: 'Хват (динамометр)',
@@ -264,5 +264,5 @@ export const FORM_TESTS: FormTestDef[] = [
   },
 ]
 
-export const FORM_TESTS_BY_ID: Record<string, FormTestDef> =
+export const FORM_TESTS_BY_ID: Record<string, FormTest> =
   Object.fromEntries(FORM_TESTS.map(t => [t.id, t]))

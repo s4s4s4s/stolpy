@@ -76,7 +76,7 @@ group('exerciseRecords: по сессиям, массив и словарь', ()
   const s2 = session('b', '2026-10-12', 2000, [
     strengthItem('squat', [set('work', 110, 3), set('warmup', 200, 1)]),
     { id: 'c', type: 'cardio', exerciseId: 'z2', mode: 'bike', durationSec: 2700, distanceKm: 18.5 },
-    { id: 'e', type: 'external', exerciseId: 'squat', activityId: 'yoga', activityTitle: 'Йога', durationMin: 60, split: { mobility: 60 } },
+    { id: 'e', type: 'external', activityId: 'squat', activityTitle: 'Йога', durationMin: 60, split: { mobility: 60 } },
   ])
   const list = [s1, s2]
   const rec = exerciseRecords(list, 'squat')

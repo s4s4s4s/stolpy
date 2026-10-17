@@ -38,6 +38,8 @@ export const LIBRARY: Record<string, Exercise> = {
   'stretch-ham': ex('stretch-ham', 'mobility', { zone: 'hamstrings', input: 'time-side' }),
   'cat-cow': ex('cat-cow', 'mobility', { zone: 'spine', input: 'time' }),
   sls: ex('sls', 'balance', { input: 'time-side' }),
+  'wgs-reps': ex('wgs-reps', 'mobility', { zone: 'hips', input: 'reps' }),
+  'bird-reps': ex('bird-reps', 'balance', { input: 'reps' }),
 }
 
 export const PROTOCOL_4X4: IntervalProtocol = {
@@ -124,8 +126,10 @@ export function strength(exerciseId: string, n: number, sets?: StrengthSet[]): S
   }
 }
 
-export function cardio(minutes: number, exerciseId = 'z2-bike'): CardioItem {
-  return { id: nextId('i'), exerciseId, type: 'cardio', mode: 'bike', durationSec: minutes * 60 }
+export function cardio(minutes: number, exerciseId = 'z2-bike', avgHr?: number): CardioItem {
+  const item: CardioItem = { id: nextId('i'), exerciseId, type: 'cardio', mode: 'bike', durationSec: minutes * 60 }
+  if (avgHr !== undefined) item.avgHr = avgHr
+  return item
 }
 
 export function intervals(roundsDone: number, protocol: IntervalProtocol = PROTOCOL_4X4): IntervalItem {
@@ -143,7 +147,7 @@ export function hold(exerciseId: string, seconds: number[]): HoldItem {
 
 export function external(durationMin: number, split: ExternalItem['split']): ExternalItem {
   return {
-    id: nextId('i'), exerciseId: 'external', type: 'external', activityId: 'other',
+    id: nextId('i'), type: 'external', activityId: 'other',
     activityTitle: 'Занятие', durationMin, split,
   }
 }

@@ -140,15 +140,24 @@ export function programPosition(program: Program, progress: ProgramProgress, tod
 /* ---- ротация дней ---- */
 
 /* Следующий день ротации - по числу выполненных дней текущей фазы, поэтому
-   пропуск сетку не сдвигает: A-B-A, затем B-A-B для ротации [A, B]. Дни до
-   подтверждённого перехода (exitConfirmedAt, по местной дате) в счёт не идут. */
+   пропуск сетку не сдвигает: A-B-A, затем B-A-B для ротации [A, B].
+   Фаза дня - его phaseIndex, записанный при выполнении: так день, сделанный
+   после подтверждения перехода в тот же календарный день, идёт в новую фазу,
+   а сделанный до подтверждения - в старую. Запись без phaseIndex (сделана до
+   появления поля) относится к фазе по дате: в текущую идёт, если она позже
+   местной даты подтверждения exitConfirmedAt или перехода не было. */
 export function dayKeyFor(progress: ProgramProgress, phase: ProgramPhase): string {
   if (phase.rotation.length === 0) throw new RangeError(`В фазе ${phase.id} пустая ротация дней`)
+  const current = progress.phaseIndex
   const confirmedAt = progress.exitConfirmedAt
   const cutoff: DateISO | null = confirmedAt !== undefined && Number.isFinite(confirmedAt)
     ? todayLocal(new Date(confirmedAt))
     : null
-  const done = progress.completedDays.filter(d => isDateISO(d.date) && (cutoff === null || d.date > cutoff)).length
+  const done = progress.completedDays.filter(d => {
+    if (!isDateISO(d.date)) return false
+    if (d.phaseIndex !== undefined) return d.phaseIndex === current
+    return cutoff === null || d.date > cutoff
+  }).length
   return phase.rotation[done % phase.rotation.length]
 }
 
@@ -162,14 +171,24 @@ export function isDayCompleted(progress: ProgramProgress, today: DateISO): boole
   return progress.completedDays.some(d => d.date === today)
 }
 
-/* Дни программы, отмеченные выполненными; повтор того же sessionId игнорируется. */
+/* Номер тренировочного дня в неделе (1..3) по порядку дней недели программы;
+   0, если today не тренировочный день. */
+export function trainingDayNumber(progress: ProgramProgress, today: DateISO): number {
+  if (!isTrainingDay(progress, today)) return 0
+  const sorted = [...progress.trainingWeekdays].sort((a, b) => a - b)
+  return sorted.indexOf(weekdayIndexMon(today)) + 1
+}
+
+/* Дни программы, отмеченные выполненными; повтор того же sessionId игнорируется.
+   День запоминает фазу, в которой выполнен (текущий phaseIndex). */
 export function completeProgramDay(
   progress: ProgramProgress,
   entry: { date: DateISO; dayKey: string; sessionId: string },
 ): ProgramProgress {
   if (!isDateISO(entry.date)) throw new RangeError(`Некорректная дата: ${JSON.stringify(entry.date)}`)
   if (progress.completedDays.some(d => d.sessionId === entry.sessionId)) return progress
-  return { ...progress, completedDays: [...progress.completedDays, { ...entry }] }
+  const day = { date: entry.date, dayKey: entry.dayKey, sessionId: entry.sessionId, phaseIndex: progress.phaseIndex }
+  return { ...progress, completedDays: [...progress.completedDays, day] }
 }
 
 /* ---- день программы как шаблон ---- */

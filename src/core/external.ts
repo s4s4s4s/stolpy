@@ -4,9 +4,7 @@
 
 import { minutesWord } from './plural'
 import { PILLARS } from './pillars'
-import type { ExternalActivity, Pillar } from './types'
-
-export type Split = Partial<Record<Pillar, number>>
+import type { ExternalActivity, Pillar, Split } from './types'
 
 export type SplitValidation =
   | { ok: true }

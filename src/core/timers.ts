@@ -260,17 +260,33 @@ export function intervalSignalPlan(protocol: IntervalProtocol): IntervalSignal[]
   return plan
 }
 
-/** Сигналы, наступившие в полуинтервале (prevNow, now]. Пауза замораживает
-    время, поэтому в паузе их нет. При обычном тике отдаются все наступившие;
-    при возврате из фона (разрыв больше BACKGROUND_GAP_MS) - только последний,
-    чтобы не проигрывать очередь. Поле atMs позволяет интерфейсу отличить
-    давний сигнал от свежего. */
-export function signalsDue(prevNow: Millis, now: Millis, run: IntervalRun, protocol: IntervalProtocol): IntervalSignal[] {
-  if (now <= prevNow) return []
-  const from = runElapsedMs(run, prevNow)
-  const to = runElapsedMs(run, now)
+/** Тик интерфейса: момент и прогон в том виде, в каком он был в этот момент. */
+export interface SignalTick {
+  now: Millis
+  run: IntervalRun
+}
+
+function sameRun(a: IntervalRun, b: IntervalRun): boolean {
+  return a.itemId === b.itemId && a.startedAt === b.startedAt
+}
+
+/** Сигналы, наступившие между двумя тиками: atMs в полуинтервале
+    (прошедшее на prev, прошедшее на next]. Прошедшее время каждого тика
+    считается по его собственному прогону: если между тиками была пауза
+    или возобновление, прогон next уже несёт новую сумму пауз, и пересчёт
+    prev по нему занизил бы прошедшее и повторил прозвучавший сигнал.
+    Пауза замораживает время, поэтому в паузе сигналов нет. При обычном
+    тике отдаются все наступившие; при возврате из фона (разрыв больше
+    BACKGROUND_GAP_MS) - только последний, чтобы не проигрывать очередь.
+    Новый прогон (другой itemId или startedAt) отсчитывается с нуля. Поле
+    atMs позволяет интерфейсу отличить давний сигнал от свежего. */
+export function signalsDue(prev: SignalTick, next: SignalTick, protocol: IntervalProtocol): IntervalSignal[] {
+  if (next.now <= prev.now) return []
+  const from = sameRun(prev.run, next.run) ? runElapsedMs(prev.run, prev.now) : runElapsedMs(next.run, prev.now)
+  const to = runElapsedMs(next.run, next.now)
+  if (to <= from) return []
   const due = intervalSignalPlan(protocol).filter(s => s.atMs > from && s.atMs <= to)
-  if (now - prevNow > BACKGROUND_GAP_MS) return due.slice(-1)
+  if (next.now - prev.now > BACKGROUND_GAP_MS) return due.slice(-1)
   return due
 }
 
@@ -320,9 +336,9 @@ export function holdSteps(
   return steps
 }
 
-/* Соглашение о паузе удержания: в HoldRun нет поля pausedAt, поэтому при
-   paused === true stepStartedAt хранит момент паузы, а stepEndsAt - прежний
-   конец шага; остаток = stepEndsAt - stepStartedAt. */
+/* Пауза удержания: пока задан HoldRun.pausedAt, время шага заморожено и
+   остаток равен stepEndsAt - pausedAt. Возобновление сдвигает обе метки шага
+   на длину паузы и снимает pausedAt. */
 
 export function startHold(itemId: string, steps: HoldStep[], now: Millis): HoldRun | null {
   if (steps.length === 0) return null
@@ -344,8 +360,8 @@ export interface HoldView {
 export function holdView(run: HoldRun, steps: HoldStep[], now: Millis): HoldView | null {
   const step = steps[run.stepIndex]
   if (!step) return null
-  const paused = run.paused === true
-  const remainingMs = Math.max(0, paused ? run.stepEndsAt - run.stepStartedAt : run.stepEndsAt - now)
+  const paused = run.pausedAt !== undefined
+  const remainingMs = Math.max(0, run.stepEndsAt - (run.pausedAt ?? now))
   const totalMs = step.sec * MS
   return {
     step, stepIndex: run.stepIndex, remainingMs,
@@ -358,15 +374,15 @@ export function holdView(run: HoldRun, steps: HoldStep[], now: Millis): HoldView
 }
 
 export function pauseHold(run: HoldRun, now: Millis): HoldRun {
-  if (run.paused) return run
-  return { ...run, paused: true, stepStartedAt: Math.min(now, run.stepEndsAt) }
+  if (run.pausedAt !== undefined) return run
+  return { ...run, pausedAt: Math.min(Math.max(now, run.stepStartedAt), run.stepEndsAt) }
 }
 
 export function resumeHold(run: HoldRun, now: Millis): HoldRun {
-  if (!run.paused) return run
-  const remaining = Math.max(0, run.stepEndsAt - run.stepStartedAt)
-  const { paused: _paused, ...rest } = run
-  return { ...rest, stepStartedAt: now, stepEndsAt: now + remaining }
+  if (run.pausedAt === undefined) return run
+  const { pausedAt, ...rest } = run
+  const shift = Math.max(0, now - pausedAt)
+  return { ...rest, stepStartedAt: run.stepStartedAt + shift, stepEndsAt: run.stepEndsAt + shift }
 }
 
 export interface HoldAdvance {
@@ -384,14 +400,14 @@ export interface HoldAdvance {
 export function advanceHold(run: HoldRun, steps: HoldStep[], now: Millis): HoldAdvance {
   let cur = run
   let crossed = 0
-  if (!cur.paused) {
+  if (cur.pausedAt === undefined) {
     while (now >= cur.stepEndsAt && cur.stepIndex < steps.length - 1) {
       const next = cur.stepIndex + 1
       cur = { ...cur, stepIndex: next, stepStartedAt: cur.stepEndsAt, stepEndsAt: cur.stepEndsAt + steps[next].sec * MS }
       crossed++
     }
   }
-  const finished = !cur.paused && steps.length > 0 && cur.stepIndex === steps.length - 1 && now >= cur.stepEndsAt
+  const finished = cur.pausedAt === undefined && steps.length > 0 && cur.stepIndex === steps.length - 1 && now >= cur.stepEndsAt
   return { run: cur, crossed, finished }
 }
 
