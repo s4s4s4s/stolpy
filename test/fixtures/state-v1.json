@@ -1,0 +1,380 @@
+{
+  "version": 1,
+  "settings": {
+    "birthYear": 1995,
+    "bodyWeightKg": 74.5,
+    "maxHrMode": "manual",
+    "maxHrManual": 192,
+    "restingHr": 56,
+    "restingHrManual": true,
+    "goals": {
+      "strengthSets": 45,
+      "strengthDays": 3,
+      "zone2Minutes": 150,
+      "intervalSessions": 2,
+      "intervalHardMinutes": 32,
+      "mobilityMinutes": 30,
+      "mobilityDays": 3,
+      "balanceMinutes": 30,
+      "balanceDays": 3
+    },
+    "homeEquipment": [
+      "bodyweight",
+      "mat",
+      "pullup-bar",
+      "dumbbells"
+    ],
+    "defaultRestSec": 120,
+    "sound": "playback",
+    "keepAwake": true,
+    "healthShortcutName": "Stolpy Log",
+    "onboardingDone": true
+  },
+  "sessions": {
+    "s-strength": {
+      "id": "s-strength",
+      "date": "2026-09-07",
+      "startedAt": 1788764400000,
+      "endedAt": 1788768000000,
+      "place": "gym",
+      "title": "Зал: верх",
+      "templateId": "gym-upper",
+      "items": [
+        {
+          "id": "i1",
+          "exerciseId": "bench-press",
+          "note": "гриф 20",
+          "type": "strength",
+          "unit": "reps",
+          "planned": [
+            {
+              "kind": "warmup",
+              "reps": 10
+            },
+            {
+              "kind": "work",
+              "reps": 8
+            },
+            {
+              "kind": "failure",
+              "reps": "max"
+            }
+          ],
+          "sets": [
+            {
+              "kind": "warmup",
+              "weightKg": 20,
+              "reps": 10,
+              "doneAt": 1788764700000
+            },
+            {
+              "kind": "work",
+              "weightKg": 60,
+              "reps": 8,
+              "rir": 2,
+              "doneAt": 1788765000000
+            },
+            {
+              "kind": "failure",
+              "weightKg": 60,
+              "reps": 9,
+              "rir": 0,
+              "doneAt": 1788765300000
+            }
+          ],
+          "restSec": 150
+        },
+        {
+          "id": "i2",
+          "exerciseId": "pullup-assisted",
+          "type": "strength",
+          "unit": "reps",
+          "planned": [
+            {
+              "kind": "work",
+              "reps": 25
+            }
+          ],
+          "sets": [
+            {
+              "kind": "work",
+              "assistKg": 15,
+              "reps": 6,
+              "rir": 1,
+              "doneAt": 1788765600000
+            }
+          ],
+          "restSec": 120,
+          "goal": {
+            "kind": "total-reps",
+            "reps": 25
+          }
+        },
+        {
+          "id": "i3",
+          "exerciseId": "side-plank",
+          "type": "strength",
+          "unit": "seconds",
+          "planned": [
+            {
+              "kind": "work",
+              "seconds": 30,
+              "side": "left"
+            },
+            {
+              "kind": "work",
+              "seconds": 30,
+              "side": "right"
+            }
+          ],
+          "sets": [
+            {
+              "kind": "work",
+              "seconds": 32,
+              "side": "left",
+              "doneAt": 1788765900000
+            },
+            {
+              "kind": "work",
+              "seconds": 28,
+              "side": "right",
+              "doneAt": 1788765960000
+            }
+          ],
+          "restSec": 60
+        }
+      ],
+      "health": {
+        "sentAt": 1788768100000,
+        "confirmed": true
+      }
+    },
+    "s-cardio": {
+      "id": "s-cardio",
+      "date": "2026-09-08",
+      "startedAt": 1788850800000,
+      "endedAt": 1788853500000,
+      "place": "outside",
+      "title": "Зона 2",
+      "items": [
+        {
+          "id": "c1",
+          "exerciseId": "zone2-walk-incline",
+          "type": "cardio",
+          "mode": "incline-walk",
+          "durationSec": 2700,
+          "distanceKm": 4.2,
+          "avgHr": 128,
+          "talkTest": true
+        },
+        {
+          "id": "c2",
+          "exerciseId": "bike-intervals",
+          "type": "intervals",
+          "mode": "bike",
+          "protocol": {
+            "id": "norwegian-4x4",
+            "title": "4x4",
+            "workSec": 240,
+            "restSec": 180,
+            "rounds": 4,
+            "warmupSec": 600,
+            "cooldownSec": 300,
+            "note": "тяжело, но ровно",
+            "source": "Helgerud 2007"
+          },
+          "roundsDone": 4,
+          "peakHr": 176
+        }
+      ],
+      "note": "по парку"
+    },
+    "s-balance": {
+      "id": "s-balance",
+      "date": "2026-09-09",
+      "startedAt": 1788937200000,
+      "endedAt": 1788938100000,
+      "place": "home",
+      "title": "Баланс и мобильность",
+      "programRef": {
+        "programId": "muscleup",
+        "phaseId": "f0",
+        "dayKey": "A",
+        "week": 1,
+        "deload": false
+      },
+      "items": [
+        {
+          "id": "h1",
+          "exerciseId": "single-leg-stand",
+          "type": "hold",
+          "perSide": true,
+          "plannedSets": 2,
+          "plannedSeconds": 30,
+          "holds": [
+            {
+              "seconds": 30,
+              "side": "left",
+              "doneAt": 1788937260000
+            },
+            {
+              "seconds": 30,
+              "side": "right",
+              "eyesClosed": true,
+              "doneAt": 1788937320000
+            }
+          ]
+        }
+      ]
+    },
+    "s-external": {
+      "id": "s-external",
+      "date": "2026-09-12",
+      "startedAt": 1789196400000,
+      "endedAt": 1789201800000,
+      "place": "outside",
+      "title": "Футбол",
+      "items": [
+        {
+          "id": "e1",
+          "exerciseId": "external",
+          "type": "external",
+          "activityId": "football",
+          "activityTitle": "Футбол",
+          "durationMin": 90,
+          "rpe": 7,
+          "split": {
+            "zone2": 50,
+            "intervals": 20,
+            "balance": 10
+          }
+        }
+      ],
+      "excludeFromWeek": false
+    }
+  },
+  "customExercises": {
+    "ex-towel-row": {
+      "id": "ex-towel-row",
+      "title": "Тяга полотенца",
+      "pillar": "strength",
+      "groups": [
+        "back",
+        "arms"
+      ],
+      "equipment": [
+        "bodyweight"
+      ],
+      "input": "reps",
+      "defaults": {
+        "sets": 3,
+        "reps": [
+          8,
+          12
+        ]
+      },
+      "technique": "Лопатки сводить в конце.",
+      "custom": true
+    }
+  },
+  "customTemplates": {
+    "tpl-short": {
+      "id": "tpl-short",
+      "title": "Короткая дома",
+      "place": "home",
+      "pillars": [
+        "strength",
+        "mobility"
+      ],
+      "items": [
+        {
+          "exerciseId": "ex-towel-row",
+          "sets": 3,
+          "reps": [
+            8,
+            12
+          ],
+          "restSec": 90,
+          "cue": "медленно вниз"
+        },
+        {
+          "exerciseId": "deep-squat-hold",
+          "seconds": 60,
+          "perSide": false
+        },
+        {
+          "exerciseId": "pushup",
+          "sets": 2,
+          "reps": "max"
+        }
+      ],
+      "estMinutes": 20,
+      "source": "custom",
+      "custom": true,
+      "createdAt": 1788678000000
+    }
+  },
+  "programs": {
+    "muscleup": {
+      "programId": "muscleup",
+      "startedOn": "2026-09-07",
+      "trainingWeekdays": [
+        0,
+        2,
+        4
+      ],
+      "phaseIndex": 0,
+      "phaseStartedWeek": 1,
+      "completedDays": [
+        {
+          "date": "2026-09-09",
+          "dayKey": "A",
+          "sessionId": "s-balance"
+        }
+      ],
+      "measurements": [
+        {
+          "date": "2026-09-07",
+          "reps": 3
+        }
+      ]
+    }
+  },
+  "testResults": [
+    {
+      "id": "tr-grip",
+      "testId": "grip",
+      "date": "2026-09-07",
+      "values": {
+        "left": 44,
+        "right": 47
+      },
+      "result": 47
+    },
+    {
+      "id": "tr-sit",
+      "testId": "sit-rise",
+      "date": "2026-09-08",
+      "values": {
+        "score": 8.5
+      },
+      "result": 8.5,
+      "note": "опора рукой при подъёме"
+    }
+  ],
+  "bodyWeights": [
+    {
+      "date": "2026-09-07",
+      "kg": 74.5
+    },
+    {
+      "date": "2026-09-14",
+      "kg": 74.1
+    }
+  ],
+  "meta": {
+    "lastBackupAt": 1788159600000,
+    "sessionsSinceBackup": 4,
+    "installedAt": 1786172400000
+  }
+}
