@@ -1,0 +1,226 @@
+/* Сброс, фон, фокус, нажатие, типографика трёх голосов. Компоненты (чипы,
+   шкалы, листы) живут в components.css и экранных файлах. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html {
+  color-scheme: dark;
+  background: var(--bg);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+}
+
+body {
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+/* Корень приложения: высота экрана и поля с учётом выреза и домашней полосы. */
+#root {
+  min-height: 100dvh;
+  padding-top: var(--safe-top);
+  padding-right: var(--safe-right);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+}
+
+h1,
+h2,
+h3,
+p,
+ul,
+ol,
+figure {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--amber-l);
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+button:disabled {
+  cursor: default;
+  color: var(--faint);
+}
+
+input,
+select,
+textarea {
+  min-height: var(--tap);
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-input);
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--r-0);
+  outline: none;
+}
+
+textarea {
+  padding-top: var(--sp-3);
+  padding-bottom: var(--sp-3);
+}
+
+select {
+  background: var(--panel-solid);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--amber-line);
+}
+
+::placeholder {
+  color: var(--dim);
+}
+
+::selection {
+  background: var(--amber-select);
+}
+
+/* Видимый фокус янтарём для клавиатуры; мышь и касание его не вызывают. */
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* Нажатие: сжатие на 3%. Элемент сам объявляет, что он нажимаемый. */
+button:active:not(:disabled),
+a:active,
+[role='button']:active,
+[role='tab']:active,
+.pressable:active {
+  transform: scale(.97);
+}
+
+button,
+a,
+[role='button'],
+[role='tab'],
+.pressable {
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+/* Три голоса. Ярлык: моно, капс, трекинг. */
+.lbl {
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  font-weight: 500;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.lbl-l {
+  font-size: var(--fs-label-l);
+}
+
+/* Текст: Golos. */
+.lead {
+  font-size: var(--fs-lead);
+  color: var(--bright);
+}
+
+.prose {
+  color: var(--prose);
+}
+
+.title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  color: var(--white);
+}
+
+/* Цифра: моно, табличные цифры, чтобы строки не прыгали. */
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--bright);
+}
+
+.timer {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-timer);
+  line-height: 1;
+  color: var(--white);
+}
+
+/* Крупные заголовки: Unbounded, капс, трекинг. */
+.display {
+  font-family: var(--disp);
+  font-weight: 700;
+  font-size: var(--fs-display);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-display);
+  text-transform: uppercase;
+  color: var(--white);
+}
+
+.display-l {
+  font-size: var(--fs-display-l);
+}
+
+/* «Нет данных»: курсив, тусклый. */
+.nodata {
+  font-style: italic;
+  color: var(--dim);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,15 @@
+#!/bin/sh
+# Отклоняет сообщение коммита с длинным или средним тире (U+2014, U+2013).
+# Сами символы в файле не записаны: проверка идёт по UTF-8 байтам через printf.
+# Включение: git config core.hooksPath .githooks
+
+msg_file="$1"
+en=$(printf '\342\200\223')
+em=$(printf '\342\200\224')
+
+if grep -n -e "$en" -e "$em" "$msg_file" >/dev/null 2>&1; then
+  echo "commit-msg: в сообщении длинное или среднее тире (U+2013 или U+2014). Замените на дефис." >&2
+  grep -n -e "$en" -e "$em" "$msg_file" >&2
+  exit 1
+fi
+exit 0

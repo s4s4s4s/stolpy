@@ -1,0 +1,12 @@
+/* Единственный CSS-импорт main.tsx. Порядок значим: шрифты, токены, база,
+   примитивы, затем экраны и листы. */
+@import './fonts.css';
+@import './tokens.css';
+@import './base.css';
+@import './components.css';
+@import './home.css';
+@import './session.css';
+@import './progress.css';
+@import './program.css';
+@import './settings.css';
+@import './sheets.css';

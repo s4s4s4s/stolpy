@@ -1,0 +1,150 @@
+/* Токены «Пульта» под телефон. Цвета перенесены из design-system/tokens.css
+   без изменений; масштаб шрифтов, отступы, размеры касаний и переменные столпов
+   добавлены под экран телефона (раздел 7 плана). Светлой темы нет.
+   Шрифты подключает fonts.css, здесь только имена семейств. */
+
+:root {
+  color-scheme: dark;
+
+  /* поверхности */
+  --bg: #131519;
+  --panel: rgba(19, 21, 25, .85);
+  --panel-solid: #17191f;
+  --panel-deep: rgba(19, 21, 25, .96);
+  --panel-float: rgba(19, 21, 25, .92);
+  --scrim: rgba(10, 12, 16, .7);
+  --blur: 10px;
+  --blur-scrim: 4px;
+
+  /* линии: разделение линиями, а не отступами */
+  --line: #2b3040;
+  --line-sub: #1d2230;
+  --line-hi: #454c60;
+
+  /* лестница текста */
+  --faint: #454c60;
+  --dim: #6e7590;
+  --mid: #8b93ad;
+  --text: #c6ccd8;
+  --bright: #e8e6df;
+  --white: #f2f0e9;
+  --prose: #b9bfcc;
+
+  /* акцент: только выбор и действие */
+  --amber: #f0a860;
+  --amber-l: #ffdca6;
+  --amber-wash: rgba(240, 168, 96, .05);
+  --amber-tint: rgba(240, 168, 96, .08);
+  --amber-fill: rgba(240, 168, 96, .1);
+  --amber-fill-on: rgba(240, 168, 96, .13);
+  --amber-mark: rgba(240, 168, 96, .22);
+  --amber-select: rgba(240, 168, 96, .3);
+  --amber-hair: rgba(240, 168, 96, .25);
+  --amber-edge: rgba(240, 168, 96, .35);
+  --amber-line: rgba(240, 168, 96, .55);
+  --amber-line-hi: rgba(240, 168, 96, .6);
+  --amber-line-max: rgba(240, 168, 96, .65);
+
+  /* статусы: зелёный только для точек и подтверждений */
+  --green: #7fc98f;
+  --yellow: #e8b84b;
+  --red: #e86450;
+  --green-text: #c8d5c9;
+  --yellow-text: #e6d9b4;
+  --red-text: #e8c0b8;
+  --green-line: rgba(127, 201, 143, .35);
+  --yellow-line: rgba(232, 184, 75, .4);
+  --red-line: rgba(232, 100, 80, .4);
+  --green-wash: rgba(127, 201, 143, .06);
+  --yellow-wash: rgba(232, 184, 75, .08);
+  --red-wash: rgba(232, 100, 80, .07);
+  --toast-bg: rgba(17, 24, 20, .88);
+
+  /* свечение и глубина: свет, а не серая тень */
+  --glow-dot: 0 0 8px currentColor;
+  --glow-dot-s: 0 0 6px currentColor;
+  --glow-cta: 0 0 14px rgba(240, 168, 96, .45);
+  --glow-cta-wide: 0 0 22px rgba(240, 168, 96, .35);
+  --shadow-float: 0 14px 34px rgba(0, 0, 0, .5);
+  --shadow-modal: 0 30px 80px rgba(0, 0, 0, .6);
+  --inset-on: inset 0 -2px 0 var(--amber);
+  --inset-row: inset 2px 0 0 var(--amber);
+
+  /* категорийная палитра; --cat-6 и --cat-7 в Столпах не используются
+     (близки к янтарю), поэтому здесь не объявлены */
+  --cat-1: #57d9c9;
+  --cat-2: #a48cf0;
+  --cat-3: #e07a8a;
+  --cat-4: #7fc98f;
+  --cat-5: #5ba0e0;
+  --cat-8: #8a97b8;
+  --cat-muted: #6f7d84;
+
+  /* цвета столпов: единственное место, где столп связан с цветом */
+  --pillar-strength: var(--cat-2);
+  --pillar-zone2: var(--cat-5);
+  --pillar-intervals: var(--cat-3);
+  --pillar-mobility: var(--cat-1);
+  --pillar-balance: var(--cat-4);
+
+  /* семейства шрифтов: три голоса - ярлык, текст, цифра/заголовок */
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --ui: 'Golos Text', system-ui, sans-serif;
+  --disp: 'Unbounded', sans-serif;
+
+  /* масштаб шрифтов под телефон */
+  --fs-label: 11px;
+  --fs-label-l: 12px;
+  --fs-body: 15px;
+  --fs-lead: 17px;
+  --fs-title: 20px;
+  --fs-display: 24px;
+  --fs-display-l: 28px;
+  --fs-timer: 56px;
+  --fs-input: 16px;            /* не меньше 16px: иначе iOS увеличивает страницу при фокусе */
+
+  --lh-body: 1.45;
+  --lh-tight: 1.2;
+
+  /* трекинг */
+  --ls-label: .14em;
+  --ls-display: .08em;
+  --ls-cta: .06em;
+
+  /* отступы: шаг 4px */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --pad-x: var(--sp-4);
+
+  /* размеры касаний */
+  --tap: 44px;
+  --tap-main: 48px;
+
+  /* высота нижней панели вкладок без safe-area */
+  --tabbar-h: 56px;
+
+  /* safe-area: безопасная зона с минимальным полем через max() */
+  --safe-top: max(var(--sp-3), env(safe-area-inset-top, 0px));
+  --safe-right: max(var(--pad-x), env(safe-area-inset-right, 0px));
+  --safe-bottom: max(var(--sp-4), env(safe-area-inset-bottom, 0px));
+  --safe-left: max(var(--pad-x), env(safe-area-inset-left, 0px));
+
+  /* скругления: 0 по умолчанию, 2 и 3px для плит над сценой */
+  --r-0: 0;
+  --r-1: 2px;
+  --r-2: 3px;
+
+  /* движение */
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+
+  /* слои */
+  --z-tabbar: 20;
+  --z-sheet: 40;
+  --z-toast: 60;
+}
